@@ -12,7 +12,12 @@ import (
 )
 
 func main() {
-	logrus.SetFormatter(&logrus.JSONFormatter{})
+	// Colored logs to stderr (Unix best practice).
+	logrus.SetFormatter(&logrus.TextFormatter{
+		ForceColors:   true,  // force colors even if no TTY
+		FullTimestamp: true,  // readable timestamps
+	})
+	logrus.SetOutput(os.Stderr)
 	logrus.SetLevel(logrus.InfoLevel)
 
 	rootCmd := &cobra.Command{
@@ -29,6 +34,7 @@ func main() {
 	}
 }
 
+// Build Pulsar client from env vars PULSAR_URL and optional PULSAR_JWT.
 func getClient() pulsar.Client {
 	url := os.Getenv("PULSAR_URL")
 	if url == "" {
@@ -36,10 +42,7 @@ func getClient() pulsar.Client {
 	}
 
 	token := os.Getenv("PULSAR_JWT")
-	options := pulsar.ClientOptions{
-		URL: url,
-	}
-
+	options := pulsar.ClientOptions{URL: url}
 	if token != "" {
 		options.Authentication = pulsar.NewAuthenticationToken(token)
 	}
@@ -51,6 +54,7 @@ func getClient() pulsar.Client {
 	return client
 }
 
+// Reader: log metadata to stderr; write payload to stdout.
 func readerCmd() *cobra.Command {
 	var topic string
 
@@ -82,12 +86,16 @@ func readerCmd() *cobra.Command {
 					logrus.Errorf("read error: %v", err)
 					continue
 				}
+
+				// Metadata -> stderr
 				logrus.WithFields(logrus.Fields{
 					"topic":     msg.Topic(),
 					"msgID":     msg.ID().Serialize(),
 					"publishAt": msg.PublishTime(),
-					"payload":   string(msg.Payload()),
 				}).Info("received message")
+
+				// Payload -> stdout (newline-terminated)
+				_, _ = os.Stdout.Write(append(msg.Payload(), '\n'))
 			}
 		},
 	}
@@ -96,6 +104,7 @@ func readerCmd() *cobra.Command {
 	return cmd
 }
 
+// Consumer: log metadata to stderr; write payload to stdout.
 func consumerCmd() *cobra.Command {
 	var topic, subscription string
 
@@ -129,12 +138,15 @@ func consumerCmd() *cobra.Command {
 					continue
 				}
 
+				// Metadata -> stderr
 				logrus.WithFields(logrus.Fields{
 					"topic":     msg.Topic(),
 					"msgID":     msg.ID().Serialize(),
 					"publishAt": msg.PublishTime(),
-					"payload":   string(msg.Payload()),
 				}).Info("received message")
+
+				// Payload -> stdout
+				_, _ = os.Stdout.Write(append(msg.Payload(), '\n'))
 
 				consumer.Ack(msg)
 			}
@@ -146,6 +158,7 @@ func consumerCmd() *cobra.Command {
 	return cmd
 }
 
+// Producer: read lines from stdin and send; log only metadata to stderr.
 func producerCmd() *cobra.Command {
 	var topic string
 
@@ -179,10 +192,10 @@ func producerCmd() *cobra.Command {
 				if _, err := producer.Send(context.Background(), msg); err != nil {
 					logrus.Errorf("send error: %v", err)
 				} else {
+					// Metadata only; content comes from stdin.
 					logrus.WithFields(logrus.Fields{
-						"topic":   topic,
-						"payload": text,
-						"time":    time.Now(),
+						"topic": topic,
+						"time":  time.Now(),
 					}).Info("sent message")
 				}
 			}
