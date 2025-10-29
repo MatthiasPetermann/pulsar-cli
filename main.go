@@ -2,7 +2,9 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"context"
+	"io"
 	"os"
 	"strings"
 	"time"
@@ -15,8 +17,8 @@ import (
 func main() {
 	// Colored logs to stderr (Unix best practice).
 	logrus.SetFormatter(&logrus.TextFormatter{
-		ForceColors:   true,  // force colors even if no TTY
-		FullTimestamp: true,  // readable timestamps
+		ForceColors:   true,
+		FullTimestamp: true,
 	})
 	logrus.SetOutput(os.Stderr)
 	logrus.SetLevel(logrus.InfoLevel)
@@ -55,10 +57,9 @@ func getClient() pulsar.Client {
 	return client
 }
 
-// Reader: log metadata (and properties) to stderr; write payload to stdout.
+// Reader: unchanged
 func readerCmd() *cobra.Command {
 	var topic string
-
 	cmd := &cobra.Command{
 		Use:   "reader",
 		Short: "Read messages from a Pulsar topic",
@@ -87,34 +88,27 @@ func readerCmd() *cobra.Command {
 					logrus.Errorf("read error: %v", err)
 					continue
 				}
-
-				// Properties + Metadata -> stderr
 				props := msg.Properties()
-				logFields := logrus.Fields{
+				fields := logrus.Fields{
 					"topic":     msg.Topic(),
 					"msgID":     msg.ID().Serialize(),
 					"publishAt": msg.PublishTime(),
 				}
 				if len(props) > 0 {
-					logFields["properties"] = props
+					fields["properties"] = props
 				}
-
-				logrus.WithFields(logFields).Info("received message")
-
-				// Payload -> stdout (newline-terminated)
+				logrus.WithFields(fields).Info("received message")
 				_, _ = os.Stdout.Write(append(msg.Payload(), '\n'))
 			}
 		},
 	}
-
 	cmd.Flags().StringVarP(&topic, "topic", "t", "", "Topic to read from")
 	return cmd
 }
 
-// Consumer: log metadata (and properties) to stderr; write payload to stdout.
+// Consumer: unchanged
 func consumerCmd() *cobra.Command {
 	var topic, subscription string
-
 	cmd := &cobra.Command{
 		Use:   "consumer",
 		Short: "Consume messages from a Pulsar topic using a subscription",
@@ -122,10 +116,8 @@ func consumerCmd() *cobra.Command {
 			if topic == "" || subscription == "" {
 				logrus.Fatal("topic and subscription are required")
 			}
-
 			client := getClient()
 			defer client.Close()
-
 			consumer, err := client.Subscribe(pulsar.ConsumerOptions{
 				Topic:            topic,
 				SubscriptionName: subscription,
@@ -137,48 +129,42 @@ func consumerCmd() *cobra.Command {
 			defer consumer.Close()
 
 			logrus.Infof("Consuming from topic %s with subscription %s ...", topic, subscription)
-
 			for {
 				msg, err := consumer.Receive(context.Background())
 				if err != nil {
 					logrus.Errorf("receive error: %v", err)
 					continue
 				}
-
-				// Properties + Metadata -> stderr
 				props := msg.Properties()
-				logFields := logrus.Fields{
+				fields := logrus.Fields{
 					"topic":     msg.Topic(),
 					"msgID":     msg.ID().Serialize(),
 					"publishAt": msg.PublishTime(),
 				}
 				if len(props) > 0 {
-					logFields["properties"] = props
+					fields["properties"] = props
 				}
-
-				logrus.WithFields(logFields).Info("received message")
-
-				// Payload -> stdout
+				logrus.WithFields(fields).Info("received message")
 				_, _ = os.Stdout.Write(append(msg.Payload(), '\n'))
-
 				consumer.Ack(msg)
 			}
 		},
 	}
-
 	cmd.Flags().StringVarP(&topic, "topic", "t", "", "Topic to consume from")
 	cmd.Flags().StringVarP(&subscription, "subscription", "s", "", "Subscription name")
 	return cmd
 }
 
-// Producer: read lines from stdin and send; log only metadata to stderr.
+// Producer: now supports --file and --delimiter
 func producerCmd() *cobra.Command {
 	var topic string
 	var propertyFlags []string
+	var filePath string
+	var delimiter string
 
 	cmd := &cobra.Command{
 		Use:   "producer",
-		Short: "Produce messages to a Pulsar topic (reads from stdin)",
+		Short: "Produce messages to a Pulsar topic (reads from stdin or file)",
 		Run: func(cmd *cobra.Command, args []string) {
 			if topic == "" {
 				logrus.Fatal("topic is required")
@@ -205,36 +191,79 @@ func producerCmd() *cobra.Command {
 			}
 			defer producer.Close()
 
-			scanner := bufio.NewScanner(os.Stdin)
-			logrus.Infof("Producing messages to topic %s (Ctrl+D to quit)", topic)
-
-			for scanner.Scan() {
-				text := scanner.Text()
+			// Read payload
+			if filePath != "" {
+				// --- File Mode: send one message with entire file content ---
+				data, err := os.ReadFile(filePath)
+				if err != nil {
+					logrus.Fatalf("failed to read file: %v", err)
+				}
 				msg := &pulsar.ProducerMessage{
-					Payload:    []byte(text),
+					Payload:    data,
 					Properties: props,
 				}
-
 				if _, err := producer.Send(context.Background(), msg); err != nil {
 					logrus.Errorf("send error: %v", err)
 				} else {
-					// Metadata + properties
-					logFields := logrus.Fields{
+					logrus.WithFields(logrus.Fields{
 						"topic":      topic,
+						"file":       filePath,
 						"time":       time.Now(),
 						"properties": props,
-					}
-					logrus.WithFields(logFields).Info("sent message")
+					}).Info("sent file as single message")
 				}
+				return
 			}
-			if err := scanner.Err(); err != nil {
-				logrus.Errorf("stdin error: %v", err)
+
+			// --- STDIN Mode ---
+			if delimiter == "" {
+				delimiter = "\n"
+			}
+			logrus.Infof("Producing messages to topic %s (Ctrl+D to quit)", topic)
+
+			reader := bufio.NewReader(os.Stdin)
+			var buffer bytes.Buffer
+
+			for {
+				line, err := reader.ReadString('\n')
+				if err != nil && err != io.EOF {
+					logrus.Errorf("stdin read error: %v", err)
+					break
+				}
+				buffer.WriteString(line)
+
+				// Check for delimiter or EOF
+				if strings.HasSuffix(buffer.String(), delimiter) || err == io.EOF {
+					payload := strings.TrimSuffix(buffer.String(), delimiter)
+					buffer.Reset()
+
+					if len(payload) > 0 {
+						msg := &pulsar.ProducerMessage{
+							Payload:    []byte(payload),
+							Properties: props,
+						}
+						if _, err := producer.Send(context.Background(), msg); err != nil {
+							logrus.Errorf("send error: %v", err)
+						} else {
+							logrus.WithFields(logrus.Fields{
+								"topic":      topic,
+								"time":       time.Now(),
+								"properties": props,
+							}).Info("sent message")
+						}
+					}
+				}
+				if err == io.EOF {
+					break
+				}
 			}
 		},
 	}
 
 	cmd.Flags().StringVarP(&topic, "topic", "t", "", "Topic to produce to")
 	cmd.Flags().StringArrayVarP(&propertyFlags, "property", "p", nil, "Message property in key=value format (repeatable)")
+	cmd.Flags().StringVarP(&filePath, "file", "f", "", "Read payload from file (sends one message per file)")
+	cmd.Flags().StringVarP(&delimiter, "delimiter", "d", "", "Custom message delimiter for stdin mode (default: newline)")
 
 	return cmd
 }
