@@ -6,8 +6,8 @@
 PRODUCT = pulsar-cli
 
 # Versionstag (aus Git oder manuell)
-BUILD_TAG = `git describe --tag`
-#BUILD_TAG = v0.9.0
+# BUILD_TAG = `git describe --tag`
+BUILD_TAG = v0.9.0
 TAG = $(shell echo $(BUILD_TAG) | sed s/^v//)
 
 # Plattforminformationen
