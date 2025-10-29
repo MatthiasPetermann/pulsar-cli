@@ -161,6 +161,7 @@ func producerCmd() *cobra.Command {
 	var filePath string
 	var delimiter string
 	var enableChunking bool
+	var enableBatching bool
 
 	cmd := &cobra.Command{
 		Use:   "producer",
@@ -185,6 +186,7 @@ func producerCmd() *cobra.Command {
 
 			producer, err := client.CreateProducer(pulsar.ProducerOptions{
 				Topic:          topic,
+				DisableBatching: !enableBatching,
 				EnableChunking: enableChunking, // 🔹 enable when flag is set
 			})
 			if err != nil {
@@ -211,6 +213,7 @@ func producerCmd() *cobra.Command {
 						"time":           time.Now(),
 						"properties":     props,
 						"chunkingActive": enableChunking,
+						"batchingActive": enableBatching,
 					}).Info("sent file as message")
 				}
 				return
@@ -250,6 +253,7 @@ func producerCmd() *cobra.Command {
 								"time":           time.Now(),
 								"properties":     props,
 								"chunkingActive": enableChunking,
+								"batchingActive": enableBatching,
 							}).Info("sent message")
 						}
 					}
@@ -266,6 +270,7 @@ func producerCmd() *cobra.Command {
 	cmd.Flags().StringVarP(&filePath, "file", "f", "", "Read payload from file (sends one message per file)")
 	cmd.Flags().StringVarP(&delimiter, "delimiter", "d", "", "Custom message delimiter for stdin mode (default: newline)")
 	cmd.Flags().BoolVarP(&enableChunking, "enable-chunking", "c", false, "Enable native Pulsar message chunking for large payloads")
+	cmd.Flags().BoolVarP(&enableBatching, "enable-batching", "b", false, "Enable native Pulsar message batching")
 
 	return cmd
 }
