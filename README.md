@@ -1,27 +1,31 @@
 # Pulsar CLI
 
-A lightweight **command-line client for Apache Pulsar** written in Go.  
-It supports producing, reading, and consuming messages from Pulsar topics — with **colored logs on `stderr`** and **message payloads on `stdout`** for easy piping.
+A lightweight **command-line client for Apache Pulsar** written in Go.
+It supports **producing**, **reading**, and **consuming** messages from Pulsar topics — with **colored logs on `stderr`** and **message payloads on `stdout`** for easy piping.
 
 ---
 
 ## ✨ Features
 
-- **Reader** — read messages from a given topic without a subscription  
-- **Consumer** — consume messages with a subscription  
-- **Producer** — publish messages (read from `stdin`) to a topic  
-- **Colored logging** with `logrus` to **`stderr`** (Unix-style)  
-- **Payloads to `stdout`** → pipe-friendly for tooling (`jq`, `grep`, etc.)  
-- **Environment-based configuration** for Pulsar connection  
-- **Static, portable builds** (no external dependencies)
+- **Reader** — read messages from a topic (no subscription)
+- **Consumer** — consume messages with a subscription
+- **Producer** — publish messages from `stdin` **or a file**
+- **Custom delimiters** for `stdin` mode (e.g. `--delimiter="\n\n"`)
+- **Message properties** via `--property key=value`
+- **Chunking** (`--enable-chunking`) for large payloads
+- **Batching** (`--enable-batching`) for throughput
+- **Colored logs** with `logrus` on `stderr`
+- **Payloads printed to `stdout`** for UNIX-style piping (`jq`, `grep`, etc.)
+- **Environment-based configuration** (`PULSAR_URL`, `PULSAR_JWT`)
+- **Static, portable builds** (no dependencies)
 
 ---
 
-## 📦 Download & Installation
+## 📦 Installation
 
 ### 🧰 Build from Source
 
-Clone and build it yourself:
+Clone and build:
 
 ```bash
 git clone https://forge.ext.d2ux.net/Atlas/pulsar-cli
@@ -31,9 +35,9 @@ go mod tidy
 make build
 ```
 
-Resulting binary will be at `./pulsar-cli`.
+Binary will be at `./pulsar-cli`.
 
-For a static cross-platform build:
+For static builds:
 
 ```bash
 make build-linux
@@ -56,67 +60,138 @@ make build-windows
 
 ### Reader
 
-Read messages from a topic (no subscription).
+Read messages from a topic **without subscription**:
 
 ```bash
 pulsar-cli reader -t "my-topic"
 ```
 
+---
+
 ### Consumer
 
-Consume messages with a subscription.
+Consume messages with a subscription:
 
 ```bash
 pulsar-cli consumer -t "my-topic" -s "my-subscription"
 ```
 
+---
+
 ### Producer
 
-Publish messages (from `stdin`) to a topic.
+Publish messages (from `stdin` or a file) to a topic.
+
+#### From stdin
 
 ```bash
 echo "Hello, Pulsar!" | pulsar-cli producer -t "my-topic"
 ```
 
+#### With custom delimiter
+
+```bash
+pulsar-cli producer -t "my-topic" -d "\n\n"
+```
+
+#### From a file
+
+```bash
+pulsar-cli producer -t "my-topic" -f ./data.json
+```
+
+#### With message properties
+
+```bash
+echo "hi" | pulsar-cli producer -t "my-topic" -p app=demo -p env=dev
+```
+
+#### Enable chunking
+
+```bash
+cat large.json | pulsar-cli producer -t "my-topic" --enable-chunking
+```
+
+#### Enable batching
+
+```bash
+seq 1 10000 | pulsar-cli producer -t "my-topic" --enable-batching
+```
+
 ---
 
-## 🪶 Example
+## 🧾 Command Reference
+
+### Reader
+
+| Flag | Description |
+|------|--------------|
+| `-t, --topic` | Topic to read from |
+
+---
+
+### Consumer
+
+| Flag | Description |
+|------|--------------|
+| `-t, --topic` | Topic to consume from |
+| `-s, --subscription` | Subscription name |
+
+---
+
+### Producer
+
+| Flag | Description |
+|------|--------------|
+| `-t, --topic` | Topic to produce to |
+| `-p, --property key=value` | Message property (repeatable) |
+| `-f, --file` | Read payload from file (sends once per file) |
+| `-d, --delimiter` | Custom message delimiter for stdin mode (default: newline) |
+| `-c, --enable-chunking` | Enable Pulsar message chunking for large payloads |
+| `-b, --enable-batching` | Enable Pulsar message batching |
+
+---
+
+## 🪶 Example Session
 
 ```bash
 export PULSAR_URL="pulsar://localhost:6650"
 export PULSAR_JWT="your-jwt-token"
 
-# Start consumer (stderr shows colored logs, stdout prints payloads)
+# Start consumer
 pulsar-cli consumer -t "demo-topic" -s "demo-sub"
 
-# Send a test message
+# Produce messages from stdin
 echo '{"msg":"hi"}' | pulsar-cli producer -t "demo-topic"
+
+# Produce from file with properties
+pulsar-cli producer -t "demo-topic" -f ./payload.json -p app=cli -p format=json
 ```
 
 ---
 
 ## 🧾 Logging & Streams
 
-**Separation of concerns:**
+### Separation of streams
 
-- **`stdout` → message payloads** (exact bytes, newline-terminated)
-- **`stderr` → operational logs** (colored, human-friendly; timestamps, metadata)
+- **`stdout` → message payloads** (clean, newline-terminated)
+- **`stderr` → logs** (colored, human-readable)
 
-### Practical examples
+### Piping examples
 
-Pipe only the **payloads** (ignore logs):
+Ignore logs:
 
 ```bash
 pulsar-cli reader -t "demo-topic" 2>/dev/null | jq .
 ```
 
-Capture logs and payloads separately:
+Split logs and payloads:
 
 ```bash
 pulsar-cli consumer -t "demo-topic" -s "demo-sub"   1>payloads.log   2>operator.log
 ```
 
-Inspect only the logs (human-readable):
+Inspect logs only:
 
 ```bash
 pulsar-cli consumer -t "demo-topic" -s "demo-sub" >/dev/null
@@ -124,19 +199,16 @@ pulsar-cli consumer -t "demo-topic" -s "demo-sub" >/dev/null
 
 ### Sample output
 
-**stderr (logs, colored in a TTY):**
+**stderr (logs):**
 ```
-INFO[0000] Reading from topic demo-topic ...
-INFO[0001] received message topic=demo-topic msgID=AQAAAHt... publishAt=2025-10-15T10:12:31Z
+INFO[0000] Producing messages to topic demo-topic (Ctrl+D to quit)
+INFO[0002] sent message topic=demo-topic time=2025-10-29T10:15:23Z chunkingActive=true batchingActive=false
 ```
 
 **stdout (payloads):**
 ```
 {"msg":"hi"}
 ```
-
-> Note: Previous versions logged the payload inside JSON logs.  
-> Now the payload is printed to **stdout** instead, which makes piping reliable.
 
 ---
 
@@ -149,14 +221,15 @@ INFO[0001] received message topic=demo-topic msgID=AQAAAHt... publishAt=2025-10-
 
 ---
 
-## 📄 License
+## 🚀 Future Work
 
-MIT License © 2025 Matthias Petermann
+- Add schema decoding (JSON/Avro)
+- Add topic metadata inspection command
+- Add message replay support
+- Add version info (build time, commit, tag)
 
 ---
 
-## 🚀 Future Work
+## 📄 License
 
-- Add message schema decoding (JSON/Avro)
-- Add topic metadata inspection command
-- Add version info (build time, commit, tag)
+MIT License © 2025 Matthias Petermann
