@@ -1,44 +1,91 @@
-# Name des Binaries
-BINARY_NAME = pulsar-cli
+# =========================================================
+# 🌀 Pulsar CLI - Makefile
+# =========================================================
+
+# Name des Produkts / Binaries
+PRODUCT = pulsar-cli
+
+# Versionstag (aus Git oder manuell)
+BUILD_TAG = `git describe --tag`
+#BUILD_TAG = v0.9.0
+TAG = $(shell echo $(BUILD_TAG) | sed s/^v//)
+
+# Plattforminformationen
+ARCH = $(shell go env GOARCH)
+OS   = $(shell go env GOOS)
 
 # Go-Build-Parameter
-GO      = go
-GOFLAGS = -trimpath
-LDFLAGS = -s -w
-BUILDFLAGS = CGO_ENABLED=0 GOOS=$(GOOS) GOARCH=$(GOARCH)
+GO       = go
+GOFLAGS  = -trimpath
+LDFLAGS  = -s -w -X main.Version=$(BUILD_TAG)
+BUILDFLAGS = CGO_ENABLED=0
 
-# Default-Ziel (baut lokal für deine aktuelle Plattform)
-all: build
+# =========================================================
+# 🧱 Build Targets
+# =========================================================
 
-# Statischer Build für die aktuelle Plattform
+# Default-Ziel (baut und packt für lokale Plattform)
+all: package
+
+# --- Lokaler Build ------------------------------------------------
 build:
-	@echo "🔨 Building $(BINARY_NAME)..."
-	$(BUILDFLAGS) $(GO) build $(GOFLAGS) -ldflags "$(LDFLAGS)" -o $(BINARY_NAME) ./...
+	@echo "🔨 Building $(PRODUCT) ($(BUILD_TAG)) for $(OS)/$(ARCH)..."
+	$(BUILDFLAGS) $(GO) build $(GOFLAGS) -ldflags '-extldflags "-static" $(LDFLAGS)' -o $(PRODUCT) ./...
 
-# Statischer Cross-Build für Linux (amd64)
+package: build
+	@echo "📦 Packaging $(PRODUCT) $(BUILD_TAG)..."
+	mkdir -p dist/$(PRODUCT)-$(TAG)-$(OS)-$(ARCH)
+	cp $(PRODUCT) dist/$(PRODUCT)-$(TAG)-$(OS)-$(ARCH)/
+	@if [ -f README.md ]; then cp README.md dist/$(PRODUCT)-$(TAG)-$(OS)-$(ARCH)/; fi
+	tar -czvf $(PRODUCT)-$(TAG)-$(OS)-$(ARCH).tar.gz -C dist $(PRODUCT)-$(TAG)-$(OS)-$(ARCH)
+
+# --- Linux --------------------------------------------------------
 build-linux:
 	@echo "🐧 Building static Linux binary..."
-	GOOS=linux GOARCH=amd64 CGO_ENABLED=0 $(GO) build $(GOFLAGS) -ldflags "$(LDFLAGS)" -o $(BINARY_NAME)-linux ./...
+	GOOS=linux GOARCH=amd64 CGO_ENABLED=0 $(GO) build $(GOFLAGS) -ldflags '-extldflags "-static" $(LDFLAGS)' -o $(PRODUCT) ./...
 
-# Statischer Cross-Build für macOS (arm64)
+package-linux: build-linux
+	@echo "📦 Packaging for Linux..."
+	mkdir -p dist/$(PRODUCT)-$(TAG)-linux-amd64
+	cp $(PRODUCT) dist/$(PRODUCT)-$(TAG)-linux-amd64/
+	@if [ -f README.md ]; then cp README.md dist/$(PRODUCT)-$(TAG)-linux-amd64/; fi
+	tar -czvf $(PRODUCT)-$(TAG)-linux-amd64.tar.gz -C dist $(PRODUCT)-$(TAG)-linux-amd64
+	rm -f $(PRODUCT)
+
+# --- macOS --------------------------------------------------------
 build-macos:
 	@echo "🍎 Building static macOS binary..."
-	GOOS=darwin GOARCH=arm64 CGO_ENABLED=0 $(GO) build $(GOFLAGS) -ldflags "$(LDFLAGS)" -o $(BINARY_NAME)-macos ./...
+	GOOS=darwin GOARCH=arm64 CGO_ENABLED=0 $(GO) build $(GOFLAGS) -ldflags '-extldflags "-static" $(LDFLAGS)' -o $(PRODUCT) ./...
 
-# Cross-Build für Windows
+package-macos: build-macos
+	@echo "📦 Packaging for macOS..."
+	mkdir -p dist/$(PRODUCT)-$(TAG)-macos-arm64
+	cp $(PRODUCT) dist/$(PRODUCT)-$(TAG)-macos-arm64/
+	@if [ -f README.md ]; then cp README.md dist/$(PRODUCT)-$(TAG)-macos-arm64/; fi
+	tar -czvf $(PRODUCT)-$(TAG)-macos-arm64.tar.gz -C dist $(PRODUCT)-$(TAG)-macos-arm64
+	rm -f $(PRODUCT)
+
+# --- Windows ------------------------------------------------------
 build-windows:
 	@echo "🪟 Building static Windows binary..."
-	GOOS=windows GOARCH=amd64 CGO_ENABLED=0 $(GO) build $(GOFLAGS) -ldflags "$(LDFLAGS)" -o $(BINARY_NAME).exe ./...
+	GOOS=windows GOARCH=amd64 CGO_ENABLED=0 $(GO) build $(GOFLAGS) -ldflags '-extldflags "-static" $(LDFLAGS)' -o $(PRODUCT).exe ./...
 
-# Testet Code und prüft auf Fehler
-test:
-	@echo "🧪 Running tests..."
-	$(GO) test ./...
+package-windows: build-windows
+	@echo "📦 Packaging for Windows..."
+	mkdir -p dist/$(PRODUCT)-$(TAG)-windows-amd64
+	cp $(PRODUCT).exe dist/$(PRODUCT)-$(TAG)-windows-amd64/
+	@if [ -f README.md ]; then cp README.md dist/$(PRODUCT)-$(TAG)-windows-amd64/; fi
+	tar -czvf $(PRODUCT)-$(TAG)-windows-amd64.tar.gz -C dist $(PRODUCT)-$(TAG)-windows-amd64
+	rm -f $(PRODUCT).exe
 
-# Entfernt gebaute Artefakte
+# --- Clean --------------------------------------------------------
 clean:
 	@echo "🧹 Cleaning..."
-	rm -f $(BINARY_NAME) $(BINARY_NAME)-linux $(BINARY_NAME)-macos $(BINARY_NAME).exe
+	rm -rf dist $(PRODUCT) $(PRODUCT).exe *.tar.gz
 
-.PHONY: all build build-linux build-macos build-windows test clean
+# --- Convenience Targets -----------------------------------------
+# Baut alle Plattformen und packt sie
+release: package-linux package-macos package-windows
 
+.DEFAULT_GOAL := all
+.PHONY: all build package build-linux package-linux build-macos package-macos build-windows package-windows release clean
