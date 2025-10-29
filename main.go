@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/apache/pulsar-client-go/pulsar"
@@ -173,6 +174,7 @@ func consumerCmd() *cobra.Command {
 // Producer: read lines from stdin and send; log only metadata to stderr.
 func producerCmd() *cobra.Command {
 	var topic string
+	var propertyFlags []string
 
 	cmd := &cobra.Command{
 		Use:   "producer",
@@ -180,6 +182,16 @@ func producerCmd() *cobra.Command {
 		Run: func(cmd *cobra.Command, args []string) {
 			if topic == "" {
 				logrus.Fatal("topic is required")
+			}
+
+			// Parse --property flags into map[string]string
+			props := map[string]string{}
+			for _, kv := range propertyFlags {
+				parts := strings.SplitN(kv, "=", 2)
+				if len(parts) != 2 {
+					logrus.Fatalf("invalid property format: %s (expected key=value)", kv)
+				}
+				props[parts[0]] = parts[1]
 			}
 
 			client := getClient()
@@ -199,16 +211,20 @@ func producerCmd() *cobra.Command {
 			for scanner.Scan() {
 				text := scanner.Text()
 				msg := &pulsar.ProducerMessage{
-					Payload: []byte(text),
+					Payload:    []byte(text),
+					Properties: props,
 				}
+
 				if _, err := producer.Send(context.Background(), msg); err != nil {
 					logrus.Errorf("send error: %v", err)
 				} else {
-					// Metadata only; content comes from stdin.
-					logrus.WithFields(logrus.Fields{
-						"topic": topic,
-						"time":  time.Now(),
-					}).Info("sent message")
+					// Metadata + properties
+					logFields := logrus.Fields{
+						"topic":      topic,
+						"time":       time.Now(),
+						"properties": props,
+					}
+					logrus.WithFields(logFields).Info("sent message")
 				}
 			}
 			if err := scanner.Err(); err != nil {
@@ -218,5 +234,7 @@ func producerCmd() *cobra.Command {
 	}
 
 	cmd.Flags().StringVarP(&topic, "topic", "t", "", "Topic to produce to")
+	cmd.Flags().StringArrayVarP(&propertyFlags, "property", "p", nil, "Message property in key=value format (repeatable)")
+
 	return cmd
 }
