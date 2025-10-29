@@ -15,7 +15,6 @@ import (
 )
 
 func main() {
-	// Colored logs to stderr (Unix best practice).
 	logrus.SetFormatter(&logrus.TextFormatter{
 		ForceColors:   true,
 		FullTimestamp: true,
@@ -155,12 +154,13 @@ func consumerCmd() *cobra.Command {
 	return cmd
 }
 
-// Producer: now supports --file and --delimiter
+// Producer: now supports --file, --delimiter, and --enable-chunking
 func producerCmd() *cobra.Command {
 	var topic string
 	var propertyFlags []string
 	var filePath string
 	var delimiter string
+	var enableChunking bool
 
 	cmd := &cobra.Command{
 		Use:   "producer",
@@ -184,16 +184,16 @@ func producerCmd() *cobra.Command {
 			defer client.Close()
 
 			producer, err := client.CreateProducer(pulsar.ProducerOptions{
-				Topic: topic,
+				Topic:          topic,
+				EnableChunking: enableChunking, // 🔹 enable when flag is set
 			})
 			if err != nil {
 				logrus.Fatalf("failed to create producer: %v", err)
 			}
 			defer producer.Close()
 
-			// Read payload
+			// File mode
 			if filePath != "" {
-				// --- File Mode: send one message with entire file content ---
 				data, err := os.ReadFile(filePath)
 				if err != nil {
 					logrus.Fatalf("failed to read file: %v", err)
@@ -206,16 +206,17 @@ func producerCmd() *cobra.Command {
 					logrus.Errorf("send error: %v", err)
 				} else {
 					logrus.WithFields(logrus.Fields{
-						"topic":      topic,
-						"file":       filePath,
-						"time":       time.Now(),
-						"properties": props,
-					}).Info("sent file as single message")
+						"topic":          topic,
+						"file":           filePath,
+						"time":           time.Now(),
+						"properties":     props,
+						"chunkingActive": enableChunking,
+					}).Info("sent file as message")
 				}
 				return
 			}
 
-			// --- STDIN Mode ---
+			// STDIN mode
 			if delimiter == "" {
 				delimiter = "\n"
 			}
@@ -232,7 +233,6 @@ func producerCmd() *cobra.Command {
 				}
 				buffer.WriteString(line)
 
-				// Check for delimiter or EOF
 				if strings.HasSuffix(buffer.String(), delimiter) || err == io.EOF {
 					payload := strings.TrimSuffix(buffer.String(), delimiter)
 					buffer.Reset()
@@ -246,9 +246,10 @@ func producerCmd() *cobra.Command {
 							logrus.Errorf("send error: %v", err)
 						} else {
 							logrus.WithFields(logrus.Fields{
-								"topic":      topic,
-								"time":       time.Now(),
-								"properties": props,
+								"topic":          topic,
+								"time":           time.Now(),
+								"properties":     props,
+								"chunkingActive": enableChunking,
 							}).Info("sent message")
 						}
 					}
@@ -264,6 +265,7 @@ func producerCmd() *cobra.Command {
 	cmd.Flags().StringArrayVarP(&propertyFlags, "property", "p", nil, "Message property in key=value format (repeatable)")
 	cmd.Flags().StringVarP(&filePath, "file", "f", "", "Read payload from file (sends one message per file)")
 	cmd.Flags().StringVarP(&delimiter, "delimiter", "d", "", "Custom message delimiter for stdin mode (default: newline)")
+	cmd.Flags().BoolVarP(&enableChunking, "enable-chunking", "c", false, "Enable native Pulsar message chunking for large payloads")
 
 	return cmd
 }
