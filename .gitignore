@@ -1,2 +1,3 @@
 dist
 pulsar-cli
+*.tar.gz

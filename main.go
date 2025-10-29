@@ -54,7 +54,7 @@ func getClient() pulsar.Client {
 	return client
 }
 
-// Reader: log metadata to stderr; write payload to stdout.
+// Reader: log metadata (and properties) to stderr; write payload to stdout.
 func readerCmd() *cobra.Command {
 	var topic string
 
@@ -87,12 +87,18 @@ func readerCmd() *cobra.Command {
 					continue
 				}
 
-				// Metadata -> stderr
-				logrus.WithFields(logrus.Fields{
+				// Properties + Metadata -> stderr
+				props := msg.Properties()
+				logFields := logrus.Fields{
 					"topic":     msg.Topic(),
 					"msgID":     msg.ID().Serialize(),
 					"publishAt": msg.PublishTime(),
-				}).Info("received message")
+				}
+				if len(props) > 0 {
+					logFields["properties"] = props
+				}
+
+				logrus.WithFields(logFields).Info("received message")
 
 				// Payload -> stdout (newline-terminated)
 				_, _ = os.Stdout.Write(append(msg.Payload(), '\n'))
@@ -104,7 +110,7 @@ func readerCmd() *cobra.Command {
 	return cmd
 }
 
-// Consumer: log metadata to stderr; write payload to stdout.
+// Consumer: log metadata (and properties) to stderr; write payload to stdout.
 func consumerCmd() *cobra.Command {
 	var topic, subscription string
 
@@ -138,12 +144,18 @@ func consumerCmd() *cobra.Command {
 					continue
 				}
 
-				// Metadata -> stderr
-				logrus.WithFields(logrus.Fields{
+				// Properties + Metadata -> stderr
+				props := msg.Properties()
+				logFields := logrus.Fields{
 					"topic":     msg.Topic(),
 					"msgID":     msg.ID().Serialize(),
 					"publishAt": msg.PublishTime(),
-				}).Info("received message")
+				}
+				if len(props) > 0 {
+					logFields["properties"] = props
+				}
+
+				logrus.WithFields(logFields).Info("received message")
 
 				// Payload -> stdout
 				_, _ = os.Stdout.Write(append(msg.Payload(), '\n'))
