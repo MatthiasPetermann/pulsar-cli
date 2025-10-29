@@ -1,36 +1,34 @@
 # =========================================================
-# 🌀 Pulsar CLI - Makefile
+# 🌀 Pulsar CLI - Makefile (fixed)
 # =========================================================
 
 # Name des Produkts / Binaries
-PRODUCT = pulsar-cli
+PRODUCT := pulsar-cli
 
-# Versionstag (aus Git oder manuell)
-# BUILD_TAG = `git describe --tag`
-BUILD_TAG = v0.9.0
-TAG = $(shell echo $(BUILD_TAG) | sed s/^v//)
+# Versionstag (aus Git oder Fallback)
+BUILD_TAG := $(shell git describe --tags --always 2>/dev/null || echo "dev")
+TAG := $(shell echo $(BUILD_TAG) | sed 's/^v//')
 
 # Plattforminformationen
-ARCH = $(shell go env GOARCH)
-OS   = $(shell go env GOOS)
+ARCH := $(shell go env GOARCH)
+OS   := $(shell go env GOOS)
 
 # Go-Build-Parameter
-GO       = go
-GOFLAGS  = -trimpath
-LDFLAGS  = -s -w -X main.Version=$(BUILD_TAG)
-BUILDFLAGS = CGO_ENABLED=0
+GO        := go
+GOFLAGS   := -trimpath
+LDFLAGS   := -s -w -X main.Version=$(BUILD_TAG)
+BUILDFLAGS := CGO_ENABLED=0
 
 # =========================================================
 # 🧱 Build Targets
 # =========================================================
 
-# Default-Ziel (baut und packt für lokale Plattform)
 all: package
 
 # --- Lokaler Build ------------------------------------------------
 build:
 	@echo "🔨 Building $(PRODUCT) ($(BUILD_TAG)) for $(OS)/$(ARCH)..."
-	$(BUILDFLAGS) $(GO) build $(GOFLAGS) -ldflags '-extldflags "-static" $(LDFLAGS)' -o $(PRODUCT) ./...
+	$(BUILDFLAGS) $(GO) build $(GOFLAGS) -ldflags "-extldflags '-static' $(LDFLAGS)" -o $(PRODUCT) ./...
 
 package: build
 	@echo "📦 Packaging $(PRODUCT) $(BUILD_TAG)..."
@@ -42,7 +40,7 @@ package: build
 # --- Linux --------------------------------------------------------
 build-linux:
 	@echo "🐧 Building static Linux binary..."
-	GOOS=linux GOARCH=amd64 CGO_ENABLED=0 $(GO) build $(GOFLAGS) -ldflags '-extldflags "-static" $(LDFLAGS)' -o $(PRODUCT) ./...
+	GOOS=linux GOARCH=amd64 CGO_ENABLED=0 $(GO) build $(GOFLAGS) -ldflags "-extldflags '-static' $(LDFLAGS)" -o $(PRODUCT) ./...
 
 package-linux: build-linux
 	@echo "📦 Packaging for Linux..."
@@ -55,7 +53,7 @@ package-linux: build-linux
 # --- macOS --------------------------------------------------------
 build-macos:
 	@echo "🍎 Building static macOS binary..."
-	GOOS=darwin GOARCH=arm64 CGO_ENABLED=0 $(GO) build $(GOFLAGS) -ldflags '-extldflags "-static" $(LDFLAGS)' -o $(PRODUCT) ./...
+	GOOS=darwin GOARCH=arm64 CGO_ENABLED=0 $(GO) build $(GOFLAGS) -ldflags "-extldflags '-static' $(LDFLAGS)" -o $(PRODUCT) ./...
 
 package-macos: build-macos
 	@echo "📦 Packaging for macOS..."
@@ -68,7 +66,7 @@ package-macos: build-macos
 # --- Windows ------------------------------------------------------
 build-windows:
 	@echo "🪟 Building static Windows binary..."
-	GOOS=windows GOARCH=amd64 CGO_ENABLED=0 $(GO) build $(GOFLAGS) -ldflags '-extldflags "-static" $(LDFLAGS)' -o $(PRODUCT).exe ./...
+	GOOS=windows GOARCH=amd64 CGO_ENABLED=0 $(GO) build $(GOFLAGS) -ldflags "-extldflags '-static' $(LDFLAGS)" -o $(PRODUCT).exe ./...
 
 package-windows: build-windows
 	@echo "📦 Packaging for Windows..."
@@ -84,7 +82,6 @@ clean:
 	rm -rf dist $(PRODUCT) $(PRODUCT).exe *.tar.gz
 
 # --- Convenience Targets -----------------------------------------
-# Baut alle Plattformen und packt sie
 release: package-linux package-macos package-windows
 
 .DEFAULT_GOAL := all
