@@ -9,6 +9,7 @@ It supports **producing**, **reading**, and **consuming** messages from Pulsar t
 
 - **Reader** — read messages from a topic (no subscription)
 - **Consumer** — consume messages with a subscription
+- **Regex topic patterns** (`--regex`) to match multiple topics
 - **Producer** — publish messages from `stdin` **or a file**
 - **Custom delimiters** for `stdin` mode (e.g. `--delimiter="\n\n"`)
 - **Message properties** via `--property key=value`
@@ -76,6 +77,19 @@ Consume messages with a subscription:
 pulsar-cli consumer -t "my-topic" -s "my-subscription"
 ```
 
+#### Consume using a Regex pattern
+
+You can subscribe to **multiple matching topics** using a regex pattern with `--regex`:
+
+```bash
+pulsar-cli consumer -t "persistent://public/default/my-topic-.*" -s "multi-sub" --regex
+```
+
+This will automatically receive messages from all topics matching the pattern, such as:
+- `persistent://public/default/my-topic-1`
+- `persistent://public/default/my-topic-foo`
+- `persistent://public/default/my-topic-bar`
+
 ---
 
 ### Producer
@@ -134,8 +148,9 @@ seq 1 10000 | pulsar-cli producer -t "my-topic" --enable-batching
 
 | Flag | Description |
 |------|--------------|
-| `-t, --topic` | Topic to consume from |
+| `-t, --topic` | Topic to consume from (or regex pattern if `--regex` is used) |
 | `-s, --subscription` | Subscription name |
+| `--regex` | Treat the topic as a regex pattern to match multiple topics |
 
 ---
 
@@ -158,8 +173,11 @@ seq 1 10000 | pulsar-cli producer -t "my-topic" --enable-batching
 export PULSAR_URL="pulsar://localhost:6650"
 export PULSAR_JWT="your-jwt-token"
 
-# Start consumer
+# Start consumer for a single topic
 pulsar-cli consumer -t "demo-topic" -s "demo-sub"
+
+# Start consumer for all topics matching demo-*
+pulsar-cli consumer -t "persistent://public/default/demo-.*" -s "demo-sub" --regex
 
 # Produce messages from stdin
 echo '{"msg":"hi"}' | pulsar-cli producer -t "demo-topic"
@@ -201,8 +219,8 @@ pulsar-cli consumer -t "demo-topic" -s "demo-sub" >/dev/null
 
 **stderr (logs):**
 ```
-INFO[0000] Producing messages to topic demo-topic (Ctrl+D to quit)
-INFO[0002] sent message topic=demo-topic time=2025-10-29T10:15:23Z chunkingActive=true batchingActive=false
+INFO[0000] Consuming from topic pattern persistent://public/default/demo-.* with subscription demo-sub
+INFO[0002] received message topic=persistent://public/default/demo-foo msgID=0001 publishAt=2025-11-11T10:00:00Z
 ```
 
 **stdout (payloads):**
@@ -227,6 +245,7 @@ INFO[0002] sent message topic=demo-topic time=2025-10-29T10:15:23Z chunkingActiv
 - Add topic metadata inspection command
 - Add message replay support
 - Add version info (build time, commit, tag)
+- Add multi-topic reader (simulate regex in reader mode)
 
 ---
 
