@@ -56,7 +56,6 @@ func getClient() pulsar.Client {
 	return client
 }
 
-// Reader: unchanged
 func readerCmd() *cobra.Command {
 	var topic string
 	cmd := &cobra.Command{
@@ -105,29 +104,43 @@ func readerCmd() *cobra.Command {
 	return cmd
 }
 
-// Consumer: unchanged
 func consumerCmd() *cobra.Command {
 	var topic, subscription string
+	var useRegex bool
+
 	cmd := &cobra.Command{
 		Use:   "consumer",
-		Short: "Consume messages from a Pulsar topic using a subscription",
+		Short: "Consume messages from a Pulsar topic or a topic pattern using a subscription",
 		Run: func(cmd *cobra.Command, args []string) {
-			if topic == "" || subscription == "" {
-				logrus.Fatal("topic and subscription are required")
+			if subscription == "" {
+				logrus.Fatal("subscription is required")
 			}
+			if topic == "" {
+				logrus.Fatal("topic or regex pattern is required")
+			}
+
 			client := getClient()
 			defer client.Close()
-			consumer, err := client.Subscribe(pulsar.ConsumerOptions{
-				Topic:            topic,
+
+			opts := pulsar.ConsumerOptions{
 				SubscriptionName: subscription,
 				Type:             pulsar.Shared,
-			})
+			}
+
+			if useRegex {
+				opts.TopicsPattern = topic
+				logrus.Infof("Consuming from topic pattern %s with subscription %s ...", topic, subscription)
+			} else {
+				opts.Topic = topic
+				logrus.Infof("Consuming from topic %s with subscription %s ...", topic, subscription)
+			}
+
+			consumer, err := client.Subscribe(opts)
 			if err != nil {
 				logrus.Fatalf("failed to create consumer: %v", err)
 			}
 			defer consumer.Close()
 
-			logrus.Infof("Consuming from topic %s with subscription %s ...", topic, subscription)
 			for {
 				msg, err := consumer.Receive(context.Background())
 				if err != nil {
@@ -149,12 +162,14 @@ func consumerCmd() *cobra.Command {
 			}
 		},
 	}
-	cmd.Flags().StringVarP(&topic, "topic", "t", "", "Topic to consume from")
+
+	cmd.Flags().StringVarP(&topic, "topic", "t", "", "Topic or regex pattern to consume from")
 	cmd.Flags().StringVarP(&subscription, "subscription", "s", "", "Subscription name")
+	cmd.Flags().BoolVar(&useRegex, "regex", false, "Treat the topic as a regex pattern (subscribe to multiple matching topics)")
+
 	return cmd
 }
 
-// Producer: now supports --file, --delimiter, and --enable-chunking
 func producerCmd() *cobra.Command {
 	var topic string
 	var propertyFlags []string
