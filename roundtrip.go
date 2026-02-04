@@ -365,6 +365,21 @@ type roundtripScenarioState struct {
 	ValidationSample string
 }
 
+type roundtripTableRow struct {
+	Status         string
+	Scenario       string
+	BaseTopic      string
+	Topic          string
+	UniqueExpected string
+	Missing        string
+	Duplicates     string
+	OutOfOrder     string
+	ProducerErrors string
+	ConsumerErrors string
+	ValidationErrs string
+	Duration       string
+}
+
 func roundtripCmd() *cobra.Command {
 	var configPath string
 
@@ -431,19 +446,14 @@ func roundtripCmd() *cobra.Command {
 			defer client.Close()
 
 			totalRuns := len(spec.Scenarios) * len(spec.Topics)
-			if parallelism <= 0 || parallelism > totalRuns {
-				parallelism = totalRuns
-			}
+			parallelism = 1
 
 			fmt.Fprintf(os.Stdout, "Roundtrip started: %d scenarios, %d base topics, parallelism=%d, total_runs=%d\n",
 				len(spec.Scenarios), len(spec.Topics), parallelism, totalRuns)
 
-			var wg sync.WaitGroup
-			sem := make(chan struct{}, parallelism)
-			results := make(chan roundtripResult, totalRuns)
-			progressCh := make(chan roundtripProgress, totalRuns*4)
 			states := make(map[string]*roundtripScenarioState, totalRuns)
 
+			completed := 0
 			for _, scenario := range spec.Scenarios {
 				messageCount := scenario.MessageCount
 				if messageCount <= 0 {
@@ -454,12 +464,13 @@ func roundtripCmd() *cobra.Command {
 					topic := topic
 					expected := scenario.Producers * messageCount
 					stateKey := roundtripStateKey(scenario.Name, topic.Name)
-					states[stateKey] = &roundtripScenarioState{
+					state := &roundtripScenarioState{
 						Scenario:  scenario.Name,
 						BaseTopic: topic.Name,
 						Status:    "RUNNING",
 						Expected:  expected,
 					}
+					states[stateKey] = state
 					fmt.Fprintf(os.Stdout,
 						"START scenario=%s base_topic=%s producers=%d consumers=%d subscription=%s expected=%d\n",
 						scenario.Name,
@@ -469,56 +480,9 @@ func roundtripCmd() *cobra.Command {
 						scenario.SubscriptionType,
 						expected,
 					)
-					wg.Add(1)
-					go func() {
-						defer wg.Done()
-						sem <- struct{}{}
-						defer func() { <-sem }()
-						results <- runRoundtripScenario(client, scenario, topic.Name, messageCount, timeout, progressInterval, progressCh)
-					}()
-				}
-			}
 
-			go func() {
-				wg.Wait()
-				close(results)
-				close(progressCh)
-			}()
-
-			ticker := time.NewTicker(progressInterval)
-			defer ticker.Stop()
-
-			completed := 0
-			for completed < totalRuns {
-				select {
-				case progress, ok := <-progressCh:
-					if !ok {
-						progressCh = nil
-						continue
-					}
-					state := states[roundtripStateKey(progress.Scenario, progress.BaseTopic)]
-					if state != nil {
-						state.Topic = progress.Topic
-						state.Expected = progress.Expected
-						state.Snapshot = progress.Snapshot
-						state.ProducerErrors = progress.ProducerErrors
-						state.ConsumerErrors = progress.ConsumerErrors
-						state.ValidationErrors = progress.ValidationErrors
-					}
-				case result, ok := <-results:
-					if !ok {
-						results = nil
-						continue
-					}
+					result := runRoundtripScenario(client, scenario, topic.Name, messageCount, timeout, progressInterval, nil)
 					completed++
-					state := states[roundtripStateKey(result.Scenario, result.BaseTopic)]
-					if state == nil {
-						state = &roundtripScenarioState{
-							Scenario:  result.Scenario,
-							BaseTopic: result.BaseTopic,
-						}
-						states[roundtripStateKey(result.Scenario, result.BaseTopic)] = state
-					}
 					state.Topic = result.Topic
 					state.Duration = result.Duration
 					state.Expected = result.Stats.Expected
@@ -542,12 +506,11 @@ func roundtripCmd() *cobra.Command {
 					} else {
 						state.Status = "OK"
 					}
-				case <-ticker.C:
+
 					printRoundtripProgress(states, completed, totalRuns)
 				}
 			}
 
-			printRoundtripProgress(states, completed, totalRuns)
 			failures := printRoundtripSummary(states)
 			if failures > 0 {
 				logrus.Fatalf("roundtrip finished with %d failures", failures)
@@ -878,19 +841,8 @@ func printRoundtripProgress(states map[string]*roundtripScenarioState, completed
 	sort.Strings(keys)
 
 	fmt.Fprintf(os.Stdout, "\nProgress: completed=%d/%d\n", completed, total)
-	printRoundtripTableHeader()
-	for _, key := range keys {
-		state := states[key]
-		missing := state.Expected - state.Snapshot.Unique
-		if missing < 0 {
-			missing = 0
-		}
-		topic := state.Topic
-		if topic == "" {
-			topic = "<pending>"
-		}
-		printRoundtripTableRow(state, topic, missing)
-	}
+	rows := buildRoundtripTableRows(states, keys)
+	printRoundtripTable(rows)
 }
 
 func printRoundtripSummary(states map[string]*roundtripScenarioState) int {
@@ -901,22 +853,14 @@ func printRoundtripSummary(states map[string]*roundtripScenarioState) int {
 	sort.Strings(keys)
 
 	fmt.Fprintln(os.Stdout, "\nSummary:")
-	printRoundtripTableHeader()
+	rows := buildRoundtripTableRows(states, keys)
+	printRoundtripTable(rows)
 	failures := 0
 	for _, key := range keys {
 		state := states[key]
 		if state.Status == "FAIL" {
 			failures++
 		}
-		missing := state.Expected - state.Snapshot.Unique
-		if missing < 0 {
-			missing = 0
-		}
-		topic := state.Topic
-		if topic == "" {
-			topic = "<pending>"
-		}
-		printRoundtripTableRow(state, topic, missing)
 		if state.ResultError != "" {
 			fmt.Fprintf(os.Stdout, "    error: %s\n", state.ResultError)
 		}
@@ -933,36 +877,158 @@ func printRoundtripSummary(states map[string]*roundtripScenarioState) int {
 	return failures
 }
 
-func printRoundtripTableHeader() {
-	fmt.Fprintln(os.Stdout, "status scenario base_topic topic unique/expected missing dup ooo prod_err cons_err val_err duration")
+func buildRoundtripTableRows(states map[string]*roundtripScenarioState, keys []string) []roundtripTableRow {
+	rows := make([]roundtripTableRow, 0, len(keys))
+	for _, key := range keys {
+		state := states[key]
+		missing := state.Expected - state.Snapshot.Unique
+		if missing < 0 {
+			missing = 0
+		}
+		topic := state.Topic
+		if topic == "" {
+			topic = "<pending>"
+		}
+		status := "RUN"
+		if state.Status == "OK" {
+			status = "OK"
+		} else if state.Status == "FAIL" {
+			status = "X"
+		}
+		duration := "-"
+		if state.Duration > 0 {
+			duration = state.Duration.Round(time.Millisecond).String()
+		}
+		rows = append(rows, roundtripTableRow{
+			Status:         status,
+			Scenario:       state.Scenario,
+			BaseTopic:      state.BaseTopic,
+			Topic:          topic,
+			UniqueExpected: fmt.Sprintf("%d/%d", state.Snapshot.Unique, state.Expected),
+			Missing:        fmt.Sprintf("%d", missing),
+			Duplicates:     fmt.Sprintf("%d", state.Snapshot.Duplicates),
+			OutOfOrder:     fmt.Sprintf("%d", state.Snapshot.OutOfOrder),
+			ProducerErrors: fmt.Sprintf("%d", state.ProducerErrors),
+			ConsumerErrors: fmt.Sprintf("%d", state.ConsumerErrors),
+			ValidationErrs: fmt.Sprintf("%d", state.ValidationErrors),
+			Duration:       duration,
+		})
+	}
+	return rows
 }
 
-func printRoundtripTableRow(state *roundtripScenarioState, topic string, missing int) {
-	statusSymbol := "⏳"
-	switch state.Status {
-	case "OK":
-		statusSymbol = "✅"
-	case "FAIL":
-		statusSymbol = "❌"
+type roundtripTableColumn struct {
+	Name  string
+	Width int
+}
+
+func printRoundtripTable(rows []roundtripTableRow) {
+	columns := []roundtripTableColumn{
+		{Name: "status", Width: 6},
+		{Name: "scenario", Width: 40},
+		{Name: "base_topic", Width: 44},
+		{Name: "topic", Width: 56},
+		{Name: "unique/expected", Width: 15},
+		{Name: "missing", Width: 7},
+		{Name: "dup", Width: 5},
+		{Name: "ooo", Width: 5},
+		{Name: "prod_err", Width: 8},
+		{Name: "cons_err", Width: 8},
+		{Name: "val_err", Width: 7},
+		{Name: "duration", Width: 9},
 	}
-	duration := "-"
-	if state.Duration > 0 {
-		duration = state.Duration.Round(time.Millisecond).String()
+
+	for idx := range columns {
+		maxWidth := runeLen(columns[idx].Name)
+		for _, row := range rows {
+			value := roundtripColumnValue(row, columns[idx].Name)
+			if length := runeLen(value); length > maxWidth {
+				maxWidth = length
+			}
+		}
+		if maxWidth > columns[idx].Width {
+			maxWidth = columns[idx].Width
+		}
+		if maxWidth < runeLen(columns[idx].Name) {
+			maxWidth = runeLen(columns[idx].Name)
+		}
+		columns[idx].Width = maxWidth
 	}
-	fmt.Fprintf(os.Stdout,
-		"%s %s %s %s %d/%d %d %d %d %d %d %d %s\n",
-		statusSymbol,
-		state.Scenario,
-		state.BaseTopic,
-		topic,
-		state.Snapshot.Unique,
-		state.Expected,
-		missing,
-		state.Snapshot.Duplicates,
-		state.Snapshot.OutOfOrder,
-		state.ProducerErrors,
-		state.ConsumerErrors,
-		state.ValidationErrors,
-		duration,
-	)
+
+	border := "+"
+	for _, column := range columns {
+		border += strings.Repeat("-", column.Width+2) + "+"
+	}
+
+	fmt.Fprintln(os.Stdout, border)
+	fmt.Fprint(os.Stdout, "|")
+	for _, column := range columns {
+		fmt.Fprintf(os.Stdout, " %s |", padAndTrim(column.Name, column.Width))
+	}
+	fmt.Fprintln(os.Stdout)
+	fmt.Fprintln(os.Stdout, border)
+
+	for _, row := range rows {
+		fmt.Fprint(os.Stdout, "|")
+		for _, column := range columns {
+			value := roundtripColumnValue(row, column.Name)
+			fmt.Fprintf(os.Stdout, " %s |", padAndTrim(value, column.Width))
+		}
+		fmt.Fprintln(os.Stdout)
+	}
+	fmt.Fprintln(os.Stdout, border)
+}
+
+func roundtripColumnValue(row roundtripTableRow, column string) string {
+	switch column {
+	case "status":
+		return row.Status
+	case "scenario":
+		return row.Scenario
+	case "base_topic":
+		return row.BaseTopic
+	case "topic":
+		return row.Topic
+	case "unique/expected":
+		return row.UniqueExpected
+	case "missing":
+		return row.Missing
+	case "dup":
+		return row.Duplicates
+	case "ooo":
+		return row.OutOfOrder
+	case "prod_err":
+		return row.ProducerErrors
+	case "cons_err":
+		return row.ConsumerErrors
+	case "val_err":
+		return row.ValidationErrs
+	case "duration":
+		return row.Duration
+	default:
+		return ""
+	}
+}
+
+func padAndTrim(value string, width int) string {
+	trimmed := truncateRunes(value, width)
+	if runeLen(trimmed) < width {
+		return trimmed + strings.Repeat(" ", width-runeLen(trimmed))
+	}
+	return trimmed
+}
+
+func truncateRunes(value string, width int) string {
+	runes := []rune(value)
+	if len(runes) <= width {
+		return value
+	}
+	if width <= 1 {
+		return string(runes[:width])
+	}
+	return string(runes[:width-1]) + "…"
+}
+
+func runeLen(value string) int {
+	return len([]rune(value))
 }
