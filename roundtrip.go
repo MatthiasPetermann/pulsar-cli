@@ -878,6 +878,7 @@ func printRoundtripProgress(states map[string]*roundtripScenarioState, completed
 	sort.Strings(keys)
 
 	fmt.Fprintf(os.Stdout, "\nProgress: completed=%d/%d\n", completed, total)
+	printRoundtripTableHeader()
 	for _, key := range keys {
 		state := states[key]
 		missing := state.Expected - state.Snapshot.Unique
@@ -888,22 +889,7 @@ func printRoundtripProgress(states map[string]*roundtripScenarioState, completed
 		if topic == "" {
 			topic = "<pending>"
 		}
-		fmt.Fprintf(os.Stdout,
-			"  [%s] scenario=%s base_topic=%s topic=%s unique=%d/%d total=%d dup=%d out_of_order=%d missing=%d prod_err=%d cons_err=%d val_err=%d\n",
-			state.Status,
-			state.Scenario,
-			state.BaseTopic,
-			topic,
-			state.Snapshot.Unique,
-			state.Expected,
-			state.Snapshot.Total,
-			state.Snapshot.Duplicates,
-			state.Snapshot.OutOfOrder,
-			missing,
-			state.ProducerErrors,
-			state.ConsumerErrors,
-			state.ValidationErrors,
-		)
+		printRoundtripTableRow(state, topic, missing)
 	}
 }
 
@@ -915,6 +901,7 @@ func printRoundtripSummary(states map[string]*roundtripScenarioState) int {
 	sort.Strings(keys)
 
 	fmt.Fprintln(os.Stdout, "\nSummary:")
+	printRoundtripTableHeader()
 	failures := 0
 	for _, key := range keys {
 		state := states[key]
@@ -929,23 +916,7 @@ func printRoundtripSummary(states map[string]*roundtripScenarioState) int {
 		if topic == "" {
 			topic = "<pending>"
 		}
-		fmt.Fprintf(os.Stdout,
-			"  [%s] scenario=%s base_topic=%s topic=%s duration=%s unique=%d/%d total=%d dup=%d out_of_order=%d missing=%d prod_err=%d cons_err=%d val_err=%d\n",
-			state.Status,
-			state.Scenario,
-			state.BaseTopic,
-			topic,
-			state.Duration.Round(time.Millisecond),
-			state.Snapshot.Unique,
-			state.Expected,
-			state.Snapshot.Total,
-			state.Snapshot.Duplicates,
-			state.Snapshot.OutOfOrder,
-			missing,
-			state.ProducerErrors,
-			state.ConsumerErrors,
-			state.ValidationErrors,
-		)
+		printRoundtripTableRow(state, topic, missing)
 		if state.ResultError != "" {
 			fmt.Fprintf(os.Stdout, "    error: %s\n", state.ResultError)
 		}
@@ -960,4 +931,38 @@ func printRoundtripSummary(states map[string]*roundtripScenarioState) int {
 		}
 	}
 	return failures
+}
+
+func printRoundtripTableHeader() {
+	fmt.Fprintln(os.Stdout, "status scenario base_topic topic unique/expected missing dup ooo prod_err cons_err val_err duration")
+}
+
+func printRoundtripTableRow(state *roundtripScenarioState, topic string, missing int) {
+	statusSymbol := "⏳"
+	switch state.Status {
+	case "OK":
+		statusSymbol = "✅"
+	case "FAIL":
+		statusSymbol = "❌"
+	}
+	duration := "-"
+	if state.Duration > 0 {
+		duration = state.Duration.Round(time.Millisecond).String()
+	}
+	fmt.Fprintf(os.Stdout,
+		"%s %s %s %s %d/%d %d %d %d %d %d %d %s\n",
+		statusSymbol,
+		state.Scenario,
+		state.BaseTopic,
+		topic,
+		state.Snapshot.Unique,
+		state.Expected,
+		missing,
+		state.Snapshot.Duplicates,
+		state.Snapshot.OutOfOrder,
+		state.ProducerErrors,
+		state.ConsumerErrors,
+		state.ValidationErrors,
+		duration,
+	)
 }
