@@ -564,6 +564,31 @@ func (s *roundtripErrorSample) value() string {
 	return s.sample
 }
 
+type roundtripFailoverState struct {
+	mu            sync.Mutex
+	activeID      int
+	switches      int
+	maxSwitches   int
+	targetPerLead int
+	recvCounts    map[int]int
+}
+
+func newRoundtripFailoverState(consumers int, expected int) roundtripFailoverState {
+	target := 0
+	if consumers > 0 {
+		target = expected / consumers
+	}
+	if target < 1 {
+		target = 1
+	}
+	return roundtripFailoverState{
+		activeID:      -1,
+		maxSwitches:   maxInt(consumers-1, 0),
+		targetPerLead: target,
+		recvCounts:    make(map[int]int),
+	}
+}
+
 func runRoundtripScenario(
 	client pulsar.Client,
 	scenario roundtripScenario,
@@ -608,6 +633,7 @@ func runRoundtripScenario(
 	var producerSample roundtripErrorSample
 	var consumerSample roundtripErrorSample
 	var validationSample roundtripErrorSample
+	var failoverState roundtripFailoverState
 
 	progressDone := make(chan struct{})
 	go func() {
@@ -659,8 +685,10 @@ func runRoundtripScenario(
 			Type:             subscriptionType,
 		})
 		if err != nil {
-			atomic.AddInt64(&consumerErrors, 1)
-			consumerSample.record("consumer=%d subscribe: %v", i, err)
+			if subscriptionType == pulsar.Shared {
+				atomic.AddInt64(&consumerErrors, 1)
+				consumerSample.record("consumer=%d subscribe: %v", i, err)
+			}
 			continue
 		}
 		consumers = append(consumers, consumer)
@@ -686,6 +714,10 @@ func runRoundtripScenario(
 			Topic:     scenarioTopic,
 			Err:       fmt.Errorf("no producers could be created"),
 		}
+	}
+
+	if subscriptionType == pulsar.Failover {
+		failoverState = newRoundtripFailoverState(len(consumers), expected)
 	}
 
 	var produceWG sync.WaitGroup
@@ -751,6 +783,13 @@ func runRoundtripScenario(
 				}
 
 				_, _, unique, _ := validator.record(producerID, seq)
+				if subscriptionType == pulsar.Failover {
+					if shouldStop := recordFailoverMessage(&failoverState, id); shouldStop {
+						cons.Ack(msg)
+						cons.Close()
+						return
+					}
+				}
 				if unique >= expected {
 					cons.Ack(msg)
 					cancel()
@@ -1031,4 +1070,35 @@ func truncateRunes(value string, width int) string {
 
 func runeLen(value string) int {
 	return len([]rune(value))
+}
+
+func recordFailoverMessage(state *roundtripFailoverState, consumerID int) bool {
+	state.mu.Lock()
+	defer state.mu.Unlock()
+
+	if state.activeID == -1 {
+		state.activeID = consumerID
+	}
+	state.recvCounts[consumerID]++
+
+	if consumerID != state.activeID {
+		return false
+	}
+	if state.switches >= state.maxSwitches {
+		return false
+	}
+	if state.recvCounts[consumerID] < state.targetPerLead {
+		return false
+	}
+
+	state.switches++
+	state.activeID = -1
+	return true
+}
+
+func maxInt(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
 }
