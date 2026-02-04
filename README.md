@@ -143,6 +143,7 @@ Run a configurable roundtrip test (producers + consumers, multiple scenarios) fr
 pulsar-cli roundtrip -c examples/roundtrip.hcl
 ```
 
+Each scenario uses a dedicated topic derived from the base topic plus the scenario name and run ID, so parallel scenarios never share the same topic.
 See `examples/roundtrip.hcl` for a ready-to-run configuration covering persistent and non-persistent topics, plus shared/failover/exclusive subscriptions.
 
 ---

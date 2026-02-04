@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -347,6 +348,23 @@ func applyScenarioValue(scenario *roundtripScenario, key string, value string) e
 	return nil
 }
 
+type roundtripScenarioState struct {
+	Scenario         string
+	BaseTopic        string
+	Topic            string
+	Status           string
+	Expected         int
+	Snapshot         roundtripSnapshot
+	ProducerErrors   int
+	ConsumerErrors   int
+	ValidationErrors int
+	Duration         time.Duration
+	ResultError      string
+	ProducerSample   string
+	ConsumerSample   string
+	ValidationSample string
+}
+
 func roundtripCmd() *cobra.Command {
 	var configPath string
 
@@ -412,12 +430,19 @@ func roundtripCmd() *cobra.Command {
 			client := getClientWithOptions(brokerURL, jwt)
 			defer client.Close()
 
-			fmt.Fprintf(os.Stdout, "Roundtrip started: %d scenarios, %d topics, parallelism=%d\n",
-				len(spec.Scenarios), len(spec.Topics), parallelism)
+			totalRuns := len(spec.Scenarios) * len(spec.Topics)
+			if parallelism <= 0 || parallelism > totalRuns {
+				parallelism = totalRuns
+			}
+
+			fmt.Fprintf(os.Stdout, "Roundtrip started: %d scenarios, %d base topics, parallelism=%d, total_runs=%d\n",
+				len(spec.Scenarios), len(spec.Topics), parallelism, totalRuns)
 
 			var wg sync.WaitGroup
 			sem := make(chan struct{}, parallelism)
-			results := make(chan roundtripResult, len(spec.Scenarios)*len(spec.Topics))
+			results := make(chan roundtripResult, totalRuns)
+			progressCh := make(chan roundtripProgress, totalRuns*4)
+			states := make(map[string]*roundtripScenarioState, totalRuns)
 
 			for _, scenario := range spec.Scenarios {
 				messageCount := scenario.MessageCount
@@ -427,48 +452,103 @@ func roundtripCmd() *cobra.Command {
 				scenario := scenario
 				for _, topic := range spec.Topics {
 					topic := topic
+					expected := scenario.Producers * messageCount
+					stateKey := roundtripStateKey(scenario.Name, topic.Name)
+					states[stateKey] = &roundtripScenarioState{
+						Scenario:  scenario.Name,
+						BaseTopic: topic.Name,
+						Status:    "RUNNING",
+						Expected:  expected,
+					}
+					fmt.Fprintf(os.Stdout,
+						"START scenario=%s base_topic=%s producers=%d consumers=%d subscription=%s expected=%d\n",
+						scenario.Name,
+						topic.Name,
+						scenario.Producers,
+						scenario.Consumers,
+						scenario.SubscriptionType,
+						expected,
+					)
 					wg.Add(1)
 					go func() {
 						defer wg.Done()
 						sem <- struct{}{}
 						defer func() { <-sem }()
-						results <- runRoundtripScenario(client, scenario, topic.Name, messageCount, timeout, progressInterval)
+						results <- runRoundtripScenario(client, scenario, topic.Name, messageCount, timeout, progressInterval, progressCh)
 					}()
 				}
 			}
 
-			wg.Wait()
-			close(results)
+			go func() {
+				wg.Wait()
+				close(results)
+				close(progressCh)
+			}()
 
-			var failures int
-			for result := range results {
-				if result.Err != nil {
-					failures++
-					fmt.Fprintf(os.Stdout, "ERROR scenario=%s topic=%s: %v\n", result.Scenario, result.Topic, result.Err)
-					continue
+			ticker := time.NewTicker(progressInterval)
+			defer ticker.Stop()
+
+			completed := 0
+			for completed < totalRuns {
+				select {
+				case progress, ok := <-progressCh:
+					if !ok {
+						progressCh = nil
+						continue
+					}
+					state := states[roundtripStateKey(progress.Scenario, progress.BaseTopic)]
+					if state != nil {
+						state.Topic = progress.Topic
+						state.Expected = progress.Expected
+						state.Snapshot = progress.Snapshot
+						state.ProducerErrors = progress.ProducerErrors
+						state.ConsumerErrors = progress.ConsumerErrors
+						state.ValidationErrors = progress.ValidationErrors
+					}
+				case result, ok := <-results:
+					if !ok {
+						results = nil
+						continue
+					}
+					completed++
+					state := states[roundtripStateKey(result.Scenario, result.BaseTopic)]
+					if state == nil {
+						state = &roundtripScenarioState{
+							Scenario:  result.Scenario,
+							BaseTopic: result.BaseTopic,
+						}
+						states[roundtripStateKey(result.Scenario, result.BaseTopic)] = state
+					}
+					state.Topic = result.Topic
+					state.Duration = result.Duration
+					state.Expected = result.Stats.Expected
+					state.Snapshot = roundtripSnapshot{
+						Total:      result.Stats.TotalReceived,
+						Unique:     result.Stats.UniqueReceived,
+						Duplicates: result.Stats.Duplicates,
+						OutOfOrder: result.Stats.OutOfOrder,
+					}
+					state.ProducerErrors = result.Stats.ProducerErrors
+					state.ConsumerErrors = result.Stats.ConsumerErrors
+					state.ValidationErrors = result.Stats.ValidationErrors
+					state.ProducerSample = result.ProducerErrorSample
+					state.ConsumerSample = result.ConsumerErrorSample
+					state.ValidationSample = result.ValidationErrorSample
+					if result.Err != nil {
+						state.Status = "FAIL"
+						state.ResultError = result.Err.Error()
+					} else if hasRoundtripIssues(result.Stats) {
+						state.Status = "FAIL"
+					} else {
+						state.Status = "OK"
+					}
+				case <-ticker.C:
+					printRoundtripProgress(states, completed, totalRuns)
 				}
-				stats := result.Stats
-				status := "OK"
-				if stats.Missing > 0 || stats.Duplicates > 0 || stats.OutOfOrder > 0 || stats.ConsumerErrors > 0 || stats.ProducerErrors > 0 {
-					status = "WARN"
-				}
-				fmt.Fprintf(os.Stdout,
-					"Result %s scenario=%s topic=%s duration=%s expected=%d unique=%d total=%d dup=%d out_of_order=%d missing=%d producer_errors=%d consumer_errors=%d\n",
-					status,
-					result.Scenario,
-					result.Topic,
-					result.Duration.Round(time.Millisecond),
-					stats.Expected,
-					stats.UniqueReceived,
-					stats.TotalReceived,
-					stats.Duplicates,
-					stats.OutOfOrder,
-					stats.Missing,
-					stats.ProducerErrors,
-					stats.ConsumerErrors,
-				)
 			}
 
+			printRoundtripProgress(states, completed, totalRuns)
+			failures := printRoundtripSummary(states)
 			if failures > 0 {
 				logrus.Fatalf("roundtrip finished with %d failures", failures)
 			}
@@ -480,39 +560,91 @@ func roundtripCmd() *cobra.Command {
 }
 
 type roundtripResult struct {
-	Scenario string
-	Topic    string
-	Stats    roundtripStats
-	Err      error
-	Duration time.Duration
+	Scenario              string
+	BaseTopic             string
+	Topic                 string
+	Stats                 roundtripStats
+	Err                   error
+	Duration              time.Duration
+	ProducerErrorSample   string
+	ConsumerErrorSample   string
+	ValidationErrorSample string
 }
 
-func runRoundtripScenario(client pulsar.Client, scenario roundtripScenario, topic string, messageCount int, timeout time.Duration, progressInterval time.Duration) roundtripResult {
+type roundtripProgress struct {
+	Scenario         string
+	BaseTopic        string
+	Topic            string
+	Expected         int
+	Snapshot         roundtripSnapshot
+	ProducerErrors   int
+	ConsumerErrors   int
+	ValidationErrors int
+}
+
+type roundtripErrorSample struct {
+	mu     sync.Mutex
+	sample string
+}
+
+func (s *roundtripErrorSample) record(format string, args ...any) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.sample == "" {
+		s.sample = fmt.Sprintf(format, args...)
+	}
+}
+
+func (s *roundtripErrorSample) value() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.sample
+}
+
+func runRoundtripScenario(
+	client pulsar.Client,
+	scenario roundtripScenario,
+	baseTopic string,
+	messageCount int,
+	timeout time.Duration,
+	progressInterval time.Duration,
+	progressCh chan<- roundtripProgress,
+) roundtripResult {
 	start := time.Now()
 	subscriptionType, err := parseSubscriptionType(scenario.SubscriptionType)
 	if err != nil {
 		return roundtripResult{
-			Scenario: scenario.Name,
-			Topic:    topic,
-			Err:      err,
+			Scenario:  scenario.Name,
+			BaseTopic: baseTopic,
+			Err:       err,
 		}
 	}
 
 	if scenario.Producers <= 0 {
-		return roundtripResult{Scenario: scenario.Name, Topic: topic, Err: fmt.Errorf("scenario %s must have producers > 0", scenario.Name)}
+		return roundtripResult{Scenario: scenario.Name, BaseTopic: baseTopic, Err: fmt.Errorf("scenario %s must have producers > 0", scenario.Name)}
 	}
 	if scenario.Consumers <= 0 {
-		return roundtripResult{Scenario: scenario.Name, Topic: topic, Err: fmt.Errorf("scenario %s must have consumers > 0", scenario.Name)}
+		return roundtripResult{Scenario: scenario.Name, BaseTopic: baseTopic, Err: fmt.Errorf("scenario %s must have consumers > 0", scenario.Name)}
 	}
 
 	testID := fmt.Sprintf("%d", time.Now().UnixNano())
-	subscriptionName := sanitizeSubscription(fmt.Sprintf("rt-%s-%s-%s", scenario.Name, topic, testID))
+	scenarioTopic := buildScenarioTopic(baseTopic, scenario.Name, testID)
+	subscriptionName := sanitizeSubscription(fmt.Sprintf("rt-%s-%s", scenario.Name, testID))
 	expected := scenario.Producers * messageCount
 
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
 	validator := newRoundtripValidator()
+
+	producers := make([]pulsar.Producer, 0, scenario.Producers)
+	consumers := make([]pulsar.Consumer, 0, scenario.Consumers)
+	var producerErrors int64
+	var consumerErrors int64
+	var validationErrors int64
+	var producerSample roundtripErrorSample
+	var consumerSample roundtripErrorSample
+	var validationSample roundtripErrorSample
 
 	progressDone := make(chan struct{})
 	go func() {
@@ -525,30 +657,28 @@ func runRoundtripScenario(client pulsar.Client, scenario roundtripScenario, topi
 				return
 			case <-ticker.C:
 				snap := validator.snapshot()
-				fmt.Fprintf(os.Stdout,
-					"Progress scenario=%s topic=%s unique=%d/%d total=%d dup=%d out_of_order=%d\n",
-					scenario.Name,
-					topic,
-					snap.Unique,
-					expected,
-					snap.Total,
-					snap.Duplicates,
-					snap.OutOfOrder,
-				)
+				select {
+				case progressCh <- roundtripProgress{
+					Scenario:         scenario.Name,
+					BaseTopic:        baseTopic,
+					Topic:            scenarioTopic,
+					Expected:         expected,
+					Snapshot:         snap,
+					ProducerErrors:   int(atomic.LoadInt64(&producerErrors)),
+					ConsumerErrors:   int(atomic.LoadInt64(&consumerErrors)),
+					ValidationErrors: int(atomic.LoadInt64(&validationErrors)),
+				}:
+				default:
+				}
 			}
 		}
 	}()
 
-	producers := make([]pulsar.Producer, 0, scenario.Producers)
-	consumers := make([]pulsar.Consumer, 0, scenario.Consumers)
-	var producerErrors int64
-	var consumerErrors int64
-
 	for i := 0; i < scenario.Producers; i++ {
-		producer, err := client.CreateProducer(pulsar.ProducerOptions{Topic: topic})
+		producer, err := client.CreateProducer(pulsar.ProducerOptions{Topic: scenarioTopic})
 		if err != nil {
 			atomic.AddInt64(&producerErrors, 1)
-			fmt.Fprintf(os.Stdout, "ERROR scenario=%s topic=%s producer=%d: %v\n", scenario.Name, topic, i, err)
+			producerSample.record("producer=%d create: %v", i, err)
 			continue
 		}
 		producers = append(producers, producer)
@@ -561,13 +691,13 @@ func runRoundtripScenario(client pulsar.Client, scenario roundtripScenario, topi
 
 	for i := 0; i < scenario.Consumers; i++ {
 		consumer, err := client.Subscribe(pulsar.ConsumerOptions{
-			Topic:            topic,
+			Topic:            scenarioTopic,
 			SubscriptionName: subscriptionName,
 			Type:             subscriptionType,
 		})
 		if err != nil {
 			atomic.AddInt64(&consumerErrors, 1)
-			fmt.Fprintf(os.Stdout, "ERROR scenario=%s topic=%s consumer=%d: %v\n", scenario.Name, topic, i, err)
+			consumerSample.record("consumer=%d subscribe: %v", i, err)
 			continue
 		}
 		consumers = append(consumers, consumer)
@@ -580,16 +710,18 @@ func runRoundtripScenario(client pulsar.Client, scenario roundtripScenario, topi
 
 	if len(consumers) == 0 {
 		return roundtripResult{
-			Scenario: scenario.Name,
-			Topic:    topic,
-			Err:      fmt.Errorf("no consumers could be created"),
+			Scenario:  scenario.Name,
+			BaseTopic: baseTopic,
+			Topic:     scenarioTopic,
+			Err:       fmt.Errorf("no consumers could be created"),
 		}
 	}
 	if len(producers) == 0 {
 		return roundtripResult{
-			Scenario: scenario.Name,
-			Topic:    topic,
-			Err:      fmt.Errorf("no producers could be created"),
+			Scenario:  scenario.Name,
+			BaseTopic: baseTopic,
+			Topic:     scenarioTopic,
+			Err:       fmt.Errorf("no producers could be created"),
 		}
 	}
 
@@ -611,7 +743,7 @@ func runRoundtripScenario(client pulsar.Client, scenario roundtripScenario, topi
 				}
 				if _, err := prod.Send(ctx, msg); err != nil {
 					atomic.AddInt64(&producerErrors, 1)
-					fmt.Fprintf(os.Stdout, "ERROR scenario=%s topic=%s producer=%s seq=%d: %v\n", scenario.Name, topic, id, seq, err)
+					producerSample.record("producer=%s send seq=%d: %v", id, seq, err)
 				}
 			}
 		}(producer, producerID)
@@ -629,7 +761,8 @@ func runRoundtripScenario(client pulsar.Client, scenario roundtripScenario, topi
 					if ctx.Err() != nil {
 						return
 					}
-					fmt.Fprintf(os.Stdout, "ERROR scenario=%s topic=%s consumer=%d receive: %v\n", scenario.Name, topic, id, err)
+					atomic.AddInt64(&consumerErrors, 1)
+					consumerSample.record("consumer=%d receive: %v", id, err)
 					continue
 				}
 
@@ -637,13 +770,15 @@ func runRoundtripScenario(client pulsar.Client, scenario roundtripScenario, topi
 				producerID := props["rt_producer_id"]
 				seqRaw := props["rt_seq"]
 				if producerID == "" || seqRaw == "" {
-					fmt.Fprintf(os.Stdout, "ERROR scenario=%s topic=%s consumer=%d missing_properties message_id=%s\n", scenario.Name, topic, id, msg.ID().Serialize())
+					atomic.AddInt64(&validationErrors, 1)
+					validationSample.record("consumer=%d missing properties message_id=%s", id, msg.ID().Serialize())
 					cons.Ack(msg)
 					continue
 				}
 				seq, err := strconv.Atoi(seqRaw)
 				if err != nil {
-					fmt.Fprintf(os.Stdout, "ERROR scenario=%s topic=%s consumer=%d bad_seq=%s message_id=%s\n", scenario.Name, topic, id, seqRaw, msg.ID().Serialize())
+					atomic.AddInt64(&validationErrors, 1)
+					validationSample.record("consumer=%d bad seq=%s message_id=%s", id, seqRaw, msg.ID().Serialize())
 					cons.Ack(msg)
 					continue
 				}
@@ -667,12 +802,17 @@ func runRoundtripScenario(client pulsar.Client, scenario roundtripScenario, topi
 	stats := validator.stats(expected)
 	stats.ProducerErrors = int(atomic.LoadInt64(&producerErrors))
 	stats.ConsumerErrors = int(atomic.LoadInt64(&consumerErrors))
+	stats.ValidationErrors = int(atomic.LoadInt64(&validationErrors))
 
 	return roundtripResult{
-		Scenario: scenario.Name,
-		Topic:    topic,
-		Stats:    stats,
-		Duration: time.Since(start),
+		Scenario:              scenario.Name,
+		BaseTopic:             baseTopic,
+		Topic:                 scenarioTopic,
+		Stats:                 stats,
+		Duration:              time.Since(start),
+		ProducerErrorSample:   producerSample.value(),
+		ConsumerErrorSample:   consumerSample.value(),
+		ValidationErrorSample: validationSample.value(),
 	}
 }
 
@@ -702,4 +842,118 @@ func sanitizeSubscription(value string) string {
 			return '-'
 		}
 	}, value)
+}
+
+func buildScenarioTopic(baseTopic, scenarioName, testID string) string {
+	suffix := sanitizeSubscription(fmt.Sprintf("%s-%s", scenarioName, testID))
+	lastSlash := strings.LastIndex(baseTopic, "/")
+	if lastSlash == -1 || lastSlash == len(baseTopic)-1 {
+		return fmt.Sprintf("%s-%s", baseTopic, suffix)
+	}
+	return fmt.Sprintf("%s-%s", baseTopic, suffix)
+}
+
+func roundtripStateKey(scenarioName, baseTopic string) string {
+	return fmt.Sprintf("%s|%s", scenarioName, baseTopic)
+}
+
+func hasRoundtripIssues(stats roundtripStats) bool {
+	return stats.Missing > 0 ||
+		stats.Duplicates > 0 ||
+		stats.OutOfOrder > 0 ||
+		stats.ProducerErrors > 0 ||
+		stats.ConsumerErrors > 0 ||
+		stats.ValidationErrors > 0
+}
+
+func printRoundtripProgress(states map[string]*roundtripScenarioState, completed, total int) {
+	keys := make([]string, 0, len(states))
+	for key := range states {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+
+	fmt.Fprintf(os.Stdout, "\nProgress: completed=%d/%d\n", completed, total)
+	for _, key := range keys {
+		state := states[key]
+		missing := state.Expected - state.Snapshot.Unique
+		if missing < 0 {
+			missing = 0
+		}
+		topic := state.Topic
+		if topic == "" {
+			topic = "<pending>"
+		}
+		fmt.Fprintf(os.Stdout,
+			"  [%s] scenario=%s base_topic=%s topic=%s unique=%d/%d total=%d dup=%d out_of_order=%d missing=%d prod_err=%d cons_err=%d val_err=%d\n",
+			state.Status,
+			state.Scenario,
+			state.BaseTopic,
+			topic,
+			state.Snapshot.Unique,
+			state.Expected,
+			state.Snapshot.Total,
+			state.Snapshot.Duplicates,
+			state.Snapshot.OutOfOrder,
+			missing,
+			state.ProducerErrors,
+			state.ConsumerErrors,
+			state.ValidationErrors,
+		)
+	}
+}
+
+func printRoundtripSummary(states map[string]*roundtripScenarioState) int {
+	keys := make([]string, 0, len(states))
+	for key := range states {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+
+	fmt.Fprintln(os.Stdout, "\nSummary:")
+	failures := 0
+	for _, key := range keys {
+		state := states[key]
+		if state.Status == "FAIL" {
+			failures++
+		}
+		missing := state.Expected - state.Snapshot.Unique
+		if missing < 0 {
+			missing = 0
+		}
+		topic := state.Topic
+		if topic == "" {
+			topic = "<pending>"
+		}
+		fmt.Fprintf(os.Stdout,
+			"  [%s] scenario=%s base_topic=%s topic=%s duration=%s unique=%d/%d total=%d dup=%d out_of_order=%d missing=%d prod_err=%d cons_err=%d val_err=%d\n",
+			state.Status,
+			state.Scenario,
+			state.BaseTopic,
+			topic,
+			state.Duration.Round(time.Millisecond),
+			state.Snapshot.Unique,
+			state.Expected,
+			state.Snapshot.Total,
+			state.Snapshot.Duplicates,
+			state.Snapshot.OutOfOrder,
+			missing,
+			state.ProducerErrors,
+			state.ConsumerErrors,
+			state.ValidationErrors,
+		)
+		if state.ResultError != "" {
+			fmt.Fprintf(os.Stdout, "    error: %s\n", state.ResultError)
+		}
+		if state.ProducerSample != "" {
+			fmt.Fprintf(os.Stdout, "    producer_error_sample: %s\n", state.ProducerSample)
+		}
+		if state.ConsumerSample != "" {
+			fmt.Fprintf(os.Stdout, "    consumer_error_sample: %s\n", state.ConsumerSample)
+		}
+		if state.ValidationSample != "" {
+			fmt.Fprintf(os.Stdout, "    validation_error_sample: %s\n", state.ValidationSample)
+		}
+	}
+	return failures
 }
