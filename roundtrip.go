@@ -767,18 +767,22 @@ func runRoundtripScenario(
 				}
 
 				props := msg.Properties()
+				if props["rt_test_id"] != testID {
+					cons.Ack(msg)
+					continue
+				}
 				producerID := props["rt_producer_id"]
 				seqRaw := props["rt_seq"]
 				if producerID == "" || seqRaw == "" {
 					atomic.AddInt64(&validationErrors, 1)
-					validationSample.record("consumer=%d missing properties message_id=%s", id, msg.ID().Serialize())
+					validationSample.record("consumer=%d missing properties message_id=%s", id, msg.ID().String())
 					cons.Ack(msg)
 					continue
 				}
 				seq, err := strconv.Atoi(seqRaw)
 				if err != nil {
 					atomic.AddInt64(&validationErrors, 1)
-					validationSample.record("consumer=%d bad seq=%s message_id=%s", id, seqRaw, msg.ID().Serialize())
+					validationSample.record("consumer=%d bad seq=%s message_id=%s", id, seqRaw, msg.ID().String())
 					cons.Ack(msg)
 					continue
 				}
