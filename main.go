@@ -30,6 +30,7 @@ func main() {
 	rootCmd.AddCommand(readerCmd())
 	rootCmd.AddCommand(consumerCmd())
 	rootCmd.AddCommand(producerCmd())
+	rootCmd.AddCommand(roundtripCmd())
 
 	if err := rootCmd.Execute(); err != nil {
 		logrus.Fatal(err)
@@ -44,6 +45,10 @@ func getClient() pulsar.Client {
 	}
 
 	token := os.Getenv("PULSAR_JWT")
+	return getClientWithOptions(url, token)
+}
+
+func getClientWithOptions(url, token string) pulsar.Client {
 	options := pulsar.ClientOptions{URL: url}
 	if token != "" {
 		options.Authentication = pulsar.NewAuthenticationToken(token)
@@ -215,9 +220,9 @@ func producerCmd() *cobra.Command {
 			defer client.Close()
 
 			producer, err := client.CreateProducer(pulsar.ProducerOptions{
-				Topic:          topic,
+				Topic:           topic,
 				DisableBatching: !enableBatching,
-				EnableChunking: enableChunking, // 🔹 enable when flag is set
+				EnableChunking:  enableChunking, // 🔹 enable when flag is set
 			})
 			if err != nil {
 				logrus.Fatalf("failed to create producer: %v", err)

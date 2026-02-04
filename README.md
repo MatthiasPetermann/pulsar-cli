@@ -11,6 +11,7 @@ It supports **producing**, **reading**, and **consuming** messages from Pulsar t
 - **Consumer** — consume messages with a subscription
 - **Regex topic patterns** (`--regex`) to match multiple topics
 - **Producer** — publish messages from `stdin` **or a file**
+- **Roundtrip validation** — publish/consume at scale with ordering, duplicate, and loss checks (HCL config)
 - **Custom delimiters** for `stdin` mode (e.g. `--delimiter="\n\n"`)
 - **Message properties** via `--property key=value`
 - **Chunking** (`--enable-chunking`) for large payloads
@@ -134,6 +135,18 @@ seq 1 10000 | pulsar-cli producer -t "my-topic" --enable-batching
 
 ---
 
+### Roundtrip Validation
+
+Run a configurable roundtrip test (producers + consumers, multiple scenarios) from an HCL spec:
+
+```bash
+pulsar-cli roundtrip -c examples/roundtrip.hcl
+```
+
+See `examples/roundtrip.hcl` for a ready-to-run configuration covering persistent and non-persistent topics, plus shared/failover/exclusive subscriptions.
+
+---
+
 ## 🧾 Command Reference
 
 ### Reader
@@ -164,6 +177,14 @@ seq 1 10000 | pulsar-cli producer -t "my-topic" --enable-batching
 | `-d, --delimiter` | Custom message delimiter for stdin mode (default: newline) |
 | `-c, --enable-chunking` | Enable Pulsar message chunking for large payloads |
 | `-b, --enable-batching` | Enable Pulsar message batching |
+
+---
+
+### Roundtrip
+
+| Flag | Description |
+|------|--------------|
+| `-c, --config` | Path to HCL test spec |
 
 ---
 
