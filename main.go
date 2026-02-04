@@ -107,6 +107,7 @@ func readerCmd() *cobra.Command {
 func consumerCmd() *cobra.Command {
 	var topic, subscription string
 	var useRegex bool
+	var subscriptionType string
 
 	cmd := &cobra.Command{
 		Use:   "consumer",
@@ -119,12 +120,25 @@ func consumerCmd() *cobra.Command {
 				logrus.Fatal("topic or regex pattern is required")
 			}
 
+			subscriptionType = strings.ToLower(subscriptionType)
+			var pulsarSubscriptionType pulsar.SubscriptionType
+			switch subscriptionType {
+			case "exclusive":
+				pulsarSubscriptionType = pulsar.Exclusive
+			case "shared":
+				pulsarSubscriptionType = pulsar.Shared
+			case "failover":
+				pulsarSubscriptionType = pulsar.Failover
+			default:
+				logrus.Fatalf("invalid subscription type %q (expected exclusive, shared, or failover)", subscriptionType)
+			}
+
 			client := getClient()
 			defer client.Close()
 
 			opts := pulsar.ConsumerOptions{
 				SubscriptionName: subscription,
-				Type:             pulsar.Shared,
+				Type:             pulsarSubscriptionType,
 			}
 
 			if useRegex {
@@ -166,6 +180,7 @@ func consumerCmd() *cobra.Command {
 	cmd.Flags().StringVarP(&topic, "topic", "t", "", "Topic or regex pattern to consume from")
 	cmd.Flags().StringVarP(&subscription, "subscription", "s", "", "Subscription name")
 	cmd.Flags().BoolVar(&useRegex, "regex", false, "Treat the topic as a regex pattern (subscribe to multiple matching topics)")
+	cmd.Flags().StringVar(&subscriptionType, "subscription-type", "shared", "Subscription type: exclusive, shared, or failover")
 
 	return cmd
 }
