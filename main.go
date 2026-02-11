@@ -30,6 +30,7 @@ func main() {
 	rootCmd.AddCommand(readerCmd())
 	rootCmd.AddCommand(consumerCmd())
 	rootCmd.AddCommand(producerCmd())
+	rootCmd.AddCommand(roundtripCmd())
 
 	if err := rootCmd.Execute(); err != nil {
 		logrus.Fatal(err)
@@ -44,6 +45,10 @@ func getClient() pulsar.Client {
 	}
 
 	token := os.Getenv("PULSAR_JWT")
+	return getClientWithOptions(url, token)
+}
+
+func getClientWithOptions(url, token string) pulsar.Client {
 	options := pulsar.ClientOptions{URL: url}
 	if token != "" {
 		options.Authentication = pulsar.NewAuthenticationToken(token)
