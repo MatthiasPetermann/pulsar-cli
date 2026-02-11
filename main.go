@@ -108,6 +108,7 @@ func consumerCmd() *cobra.Command {
 	var topic, subscription string
 	var useRegex bool
 	var subscriptionType string
+	var subscriptionInitialPosition string
 
 	cmd := &cobra.Command{
 		Use:   "consumer",
@@ -133,12 +134,24 @@ func consumerCmd() *cobra.Command {
 				logrus.Fatalf("invalid subscription type %q (expected exclusive, shared, or failover)", subscriptionType)
 			}
 
+			subscriptionInitialPosition = strings.ToLower(subscriptionInitialPosition)
+			var pulsarInitialPosition pulsar.SubscriptionInitialPosition
+			switch subscriptionInitialPosition {
+			case "earliest":
+				pulsarInitialPosition = pulsar.SubscriptionPositionEarliest
+			case "latest":
+				pulsarInitialPosition = pulsar.SubscriptionPositionLatest
+			default:
+				logrus.Fatalf("invalid subscription initial position %q (expected earliest or latest)", subscriptionInitialPosition)
+			}
+
 			client := getClient()
 			defer client.Close()
 
 			opts := pulsar.ConsumerOptions{
-				SubscriptionName: subscription,
-				Type:             pulsarSubscriptionType,
+				SubscriptionName:            subscription,
+				Type:                        pulsarSubscriptionType,
+				SubscriptionInitialPosition: pulsarInitialPosition,
 			}
 
 			if useRegex {
@@ -181,6 +194,7 @@ func consumerCmd() *cobra.Command {
 	cmd.Flags().StringVarP(&subscription, "subscription", "s", "", "Subscription name")
 	cmd.Flags().BoolVar(&useRegex, "regex", false, "Treat the topic as a regex pattern (subscribe to multiple matching topics)")
 	cmd.Flags().StringVar(&subscriptionType, "subscription-type", "shared", "Subscription type: exclusive, shared, or failover")
+	cmd.Flags().StringVar(&subscriptionInitialPosition, "subscription-initial-position", "latest", "Initial position for new subscriptions: earliest or latest")
 
 	return cmd
 }
@@ -215,9 +229,9 @@ func producerCmd() *cobra.Command {
 			defer client.Close()
 
 			producer, err := client.CreateProducer(pulsar.ProducerOptions{
-				Topic:          topic,
+				Topic:           topic,
 				DisableBatching: !enableBatching,
-				EnableChunking: enableChunking, // 🔹 enable when flag is set
+				EnableChunking:  enableChunking, // 🔹 enable when flag is set
 			})
 			if err != nil {
 				logrus.Fatalf("failed to create producer: %v", err)

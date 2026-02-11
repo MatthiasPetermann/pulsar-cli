@@ -151,6 +151,8 @@ seq 1 10000 | pulsar-cli producer -t "my-topic" --enable-batching
 | `-t, --topic` | Topic to consume from (or regex pattern if `--regex` is used) |
 | `-s, --subscription` | Subscription name |
 | `--regex` | Treat the topic as a regex pattern to match multiple topics |
+| `--subscription-type` | Subscription type: exclusive, shared, or failover |
+| `--subscription-initial-position` | Initial position for new subscriptions: earliest or latest (default: latest) |
 
 ---
 
