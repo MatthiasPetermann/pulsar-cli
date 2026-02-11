@@ -23,6 +23,23 @@ It supports **producing**, **reading**, and **consuming** messages from Pulsar t
 
 ---
 
+
+## 🏗️ Project Structure
+
+The project is organized by responsibility so commands and shared logic stay easy to navigate:
+
+- `main.go` — process bootstrap (logging setup + command execution)
+- `internal/cli/root.go` — root command wiring
+- `internal/cli/client.go` — Pulsar client factory helpers
+- `internal/cli/reader.go` — reader command
+- `internal/cli/consumer.go` — consumer command
+- `internal/cli/producer.go` — producer command
+- `internal/cli/roundtrip.go` — roundtrip validation flow and helpers
+
+This split follows a simple best practice: keep startup, command registration, and command behavior separate.
+
+---
+
 ## 📦 Installation
 
 ### 🧰 Build from Source
