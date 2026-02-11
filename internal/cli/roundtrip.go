@@ -1,18 +1,17 @@
-package main
+package cli
 
 import (
-	"bufio"
 	"context"
 	"fmt"
 	"os"
 	"sort"
-	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/apache/pulsar-client-go/pulsar"
+	"github.com/hashicorp/hcl/v2/hclsimple"
 	"github.com/sirupsen/logrus"
 	"github.com/spf13/cobra"
 )
@@ -133,219 +132,11 @@ func (v *roundtripValidator) stats(expected int) roundtripStats {
 }
 
 func parseRoundtripSpec(path string) (roundtripSpec, error) {
-	file, err := os.Open(path)
-	if err != nil {
-		return roundtripSpec{}, err
-	}
-	defer file.Close()
-
 	var spec roundtripSpec
-	scanner := bufio.NewScanner(file)
-	var currentBlock string
-
-	for scanner.Scan() {
-		line := stripHCLComments(scanner.Text())
-		line = strings.TrimSpace(line)
-		if line == "" {
-			continue
-		}
-
-		if line == "}" {
-			currentBlock = ""
-			continue
-		}
-
-		if strings.HasPrefix(line, "global") && strings.Contains(line, "{") {
-			currentBlock = "global"
-			continue
-		}
-
-		if strings.HasPrefix(line, "topic") && strings.Contains(line, "{") {
-			label, err := parseHCLLabel(line)
-			if err != nil {
-				return roundtripSpec{}, err
-			}
-			spec.Topics = append(spec.Topics, roundtripTopic{Name: label})
-			currentBlock = "topic"
-			continue
-		}
-
-		if strings.HasPrefix(line, "scenario") && strings.Contains(line, "{") {
-			label, err := parseHCLLabel(line)
-			if err != nil {
-				return roundtripSpec{}, err
-			}
-			spec.Scenarios = append(spec.Scenarios, roundtripScenario{Name: label})
-			currentBlock = "scenario"
-			continue
-		}
-
-		if currentBlock == "" {
-			return roundtripSpec{}, fmt.Errorf("unexpected content outside block: %s", line)
-		}
-
-		key, rawValue, err := parseHCLAssignment(line)
-		if err != nil {
-			return roundtripSpec{}, err
-		}
-
-		switch currentBlock {
-		case "global":
-			if err := applyGlobalValue(&spec.Global, key, rawValue); err != nil {
-				return roundtripSpec{}, err
-			}
-		case "scenario":
-			if len(spec.Scenarios) == 0 {
-				return roundtripSpec{}, fmt.Errorf("scenario block missing label")
-			}
-			last := &spec.Scenarios[len(spec.Scenarios)-1]
-			if err := applyScenarioValue(last, key, rawValue); err != nil {
-				return roundtripSpec{}, err
-			}
-		case "topic":
-			return roundtripSpec{}, fmt.Errorf("topic blocks do not accept attributes: %s", line)
-		default:
-			return roundtripSpec{}, fmt.Errorf("unknown block type %s", currentBlock)
-		}
-	}
-
-	if err := scanner.Err(); err != nil {
+	if err := hclsimple.DecodeFile(path, nil, &spec); err != nil {
 		return roundtripSpec{}, err
 	}
-
 	return spec, nil
-}
-
-func stripHCLComments(line string) string {
-	var builder strings.Builder
-	inQuote := false
-	for i := 0; i < len(line); i++ {
-		char := line[i]
-		if char == '"' {
-			inQuote = !inQuote
-		}
-		if !inQuote {
-			if char == '#' {
-				break
-			}
-			if char == '/' && i+1 < len(line) && line[i+1] == '/' {
-				break
-			}
-		}
-		builder.WriteByte(char)
-	}
-	return builder.String()
-}
-
-func parseHCLLabel(line string) (string, error) {
-	start := strings.Index(line, "\"")
-	end := strings.LastIndex(line, "\"")
-	if start == -1 || end == -1 || end <= start {
-		return "", fmt.Errorf("missing block label: %s", line)
-	}
-	return line[start+1 : end], nil
-}
-
-func parseHCLAssignment(line string) (string, string, error) {
-	parts := strings.SplitN(line, "=", 2)
-	if len(parts) != 2 {
-		return "", "", fmt.Errorf("invalid assignment: %s", line)
-	}
-	key := strings.TrimSpace(parts[0])
-	value := strings.TrimSpace(parts[1])
-	if key == "" || value == "" {
-		return "", "", fmt.Errorf("invalid assignment: %s", line)
-	}
-	return key, value, nil
-}
-
-func parseHCLString(value string) (string, error) {
-	value = strings.TrimSpace(value)
-	if strings.HasPrefix(value, "\"") && strings.HasSuffix(value, "\"") && len(value) >= 2 {
-		return strings.Trim(value, "\""), nil
-	}
-	return "", fmt.Errorf("expected quoted string, got %q", value)
-}
-
-func parseHCLInt(value string) (int, error) {
-	value = strings.TrimSpace(value)
-	return strconv.Atoi(value)
-}
-
-func applyGlobalValue(global *roundtripGlobal, key string, value string) error {
-	switch key {
-	case "broker_url":
-		parsed, err := parseHCLString(value)
-		if err != nil {
-			return err
-		}
-		global.BrokerURL = parsed
-	case "jwt":
-		parsed, err := parseHCLString(value)
-		if err != nil {
-			return err
-		}
-		global.JWT = parsed
-	case "parallelism":
-		parsed, err := parseHCLInt(value)
-		if err != nil {
-			return err
-		}
-		global.Parallelism = parsed
-	case "message_count":
-		parsed, err := parseHCLInt(value)
-		if err != nil {
-			return err
-		}
-		global.MessageCount = parsed
-	case "timeout":
-		parsed, err := parseHCLString(value)
-		if err != nil {
-			return err
-		}
-		global.Timeout = parsed
-	case "progress_interval":
-		parsed, err := parseHCLString(value)
-		if err != nil {
-			return err
-		}
-		global.ProgressInterval = parsed
-	default:
-		return fmt.Errorf("unknown global key: %s", key)
-	}
-	return nil
-}
-
-func applyScenarioValue(scenario *roundtripScenario, key string, value string) error {
-	switch key {
-	case "producers":
-		parsed, err := parseHCLInt(value)
-		if err != nil {
-			return err
-		}
-		scenario.Producers = parsed
-	case "consumers":
-		parsed, err := parseHCLInt(value)
-		if err != nil {
-			return err
-		}
-		scenario.Consumers = parsed
-	case "subscription_type":
-		parsed, err := parseHCLString(value)
-		if err != nil {
-			return err
-		}
-		scenario.SubscriptionType = parsed
-	case "message_count":
-		parsed, err := parseHCLInt(value)
-		if err != nil {
-			return err
-		}
-		scenario.MessageCount = parsed
-	default:
-		return fmt.Errorf("unknown scenario key: %s", key)
-	}
-	return nil
 }
 
 type roundtripScenarioState struct {
