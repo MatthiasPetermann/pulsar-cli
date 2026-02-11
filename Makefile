@@ -28,7 +28,7 @@ all: package
 # --- Lokaler Build ------------------------------------------------
 build:
 	@echo "🔨 Building $(PRODUCT) ($(BUILD_TAG)) for $(OS)/$(ARCH)..."
-	$(BUILDFLAGS) $(GO) build $(GOFLAGS) -ldflags "-extldflags '-static' $(LDFLAGS)" -o $(PRODUCT) ./...
+	$(BUILDFLAGS) $(GO) build $(GOFLAGS) -ldflags "-extldflags '-static' $(LDFLAGS)" -o $(PRODUCT) .
 
 package: build
 	@echo "📦 Packaging $(PRODUCT) $(BUILD_TAG)..."
@@ -40,7 +40,7 @@ package: build
 # --- Linux --------------------------------------------------------
 build-linux:
 	@echo "🐧 Building static Linux binary..."
-	GOOS=linux GOARCH=amd64 CGO_ENABLED=0 $(GO) build $(GOFLAGS) -ldflags "-extldflags '-static' $(LDFLAGS)" -o $(PRODUCT) ./...
+	GOOS=linux GOARCH=amd64 CGO_ENABLED=0 $(GO) build $(GOFLAGS) -ldflags "-extldflags '-static' $(LDFLAGS)" -o $(PRODUCT) .
 
 package-linux: build-linux
 	@echo "📦 Packaging for Linux..."
@@ -53,7 +53,7 @@ package-linux: build-linux
 # --- macOS --------------------------------------------------------
 build-macos:
 	@echo "🍎 Building static macOS binary..."
-	GOOS=darwin GOARCH=arm64 CGO_ENABLED=0 $(GO) build $(GOFLAGS) -ldflags "-extldflags '-static' $(LDFLAGS)" -o $(PRODUCT) ./...
+	GOOS=darwin GOARCH=arm64 CGO_ENABLED=0 $(GO) build $(GOFLAGS) -ldflags "-extldflags '-static' $(LDFLAGS)" -o $(PRODUCT) .
 
 package-macos: build-macos
 	@echo "📦 Packaging for macOS..."
@@ -66,7 +66,7 @@ package-macos: build-macos
 # --- Windows ------------------------------------------------------
 build-windows:
 	@echo "🪟 Building static Windows binary..."
-	GOOS=windows GOARCH=amd64 CGO_ENABLED=0 $(GO) build $(GOFLAGS) -ldflags "-extldflags '-static' $(LDFLAGS)" -o $(PRODUCT).exe ./...
+	GOOS=windows GOARCH=amd64 CGO_ENABLED=0 $(GO) build $(GOFLAGS) -ldflags "-extldflags '-static' $(LDFLAGS)" -o $(PRODUCT).exe .
 
 package-windows: build-windows
 	@echo "📦 Packaging for Windows..."
